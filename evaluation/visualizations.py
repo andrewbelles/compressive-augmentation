@@ -6,6 +6,7 @@
 #
 
 import os
+import json
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/fma-topology-evaluation-matplotlib")
@@ -31,6 +32,22 @@ GENRE_ORDER = [
     "Pop",
     "Rock",
 ]
+
+ANCHOR_BASELINE_CONFIG = {
+    "anchor_dir": "representation/data",
+    "source": "anchor",
+    "dataset": "fma_small_mel",
+}
+
+
+def configure_anchor_baseline(config: dict) -> None:
+    ANCHOR_BASELINE_CONFIG.update(
+        {
+            "anchor_dir": str(config.get("anchor_dir", ANCHOR_BASELINE_CONFIG["anchor_dir"])),
+            "source": str(config.get("source", ANCHOR_BASELINE_CONFIG["source"])),
+            "dataset": str(config.get("dataset", ANCHOR_BASELINE_CONFIG["dataset"])),
+        }
+    )
 
 
 def ratio_axis_max(frame: pd.DataFrame) -> float:
@@ -61,8 +78,32 @@ def set_tight_score_axis(axis: plt.Axes, values: pd.Series | list[float], extra_
 
 
 def anchor_baseline(metric_column: str) -> float | None:
-    path = Path(__file__).resolve().parent / "data" / "anchor_r100_s00_logistic_summary.csv"
-    if not path.is_file():
+    metric_map = {
+        "test_f1_macro": "test_logistic_f1_macro",
+        "test_pr_auc_macro": "test_logistic_pr_auc_macro",
+        "test_accuracy": "test_logistic_accuracy",
+        "validation_f1_macro": "validation_logistic_f1_macro",
+        "validation_pr_auc_macro": "validation_logistic_pr_auc_macro",
+        "validation_accuracy": "validation_logistic_accuracy",
+    }
+    anchor_dir = Path(str(ANCHOR_BASELINE_CONFIG["anchor_dir"])).expanduser()
+    source = str(ANCHOR_BASELINE_CONFIG["source"])
+    dataset = str(ANCHOR_BASELINE_CONFIG["dataset"])
+    metadata_path = anchor_dir / f"{source}_{dataset}_metadata.json"
+    if metadata_path.is_file():
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        selected_metrics = payload.get("selected_metrics", {})
+        value = selected_metrics.get(metric_map.get(metric_column, metric_column))
+        if value is not None and pd.notna(value):
+            return float(value)
+
+    data_root = Path(__file__).resolve().parent / "data"
+    candidate_paths = [
+        data_root / f"{source}_{dataset}_logistic_summary.csv",
+        data_root / "anchor_r100_s00_logistic_summary.csv",
+    ]
+    path = next((candidate for candidate in candidate_paths if candidate.is_file()), None)
+    if path is None:
         return None
     frame = pd.read_csv(path)
     if frame.empty or metric_column not in frame.columns:
@@ -350,22 +391,36 @@ def save_topology_metric_panel(
     sns.set_theme(style="white")
 
     plot_frame = frame[frame["method"] == method].copy()
-    if {"persistence_image_h0", "persistence_image_h1"}.issubset(plot_frame.columns):
-        metrics = [
+    def has_signal(column: str) -> bool:
+        if column not in plot_frame.columns:
+            return False
+        if column.endswith("_h1"):
+            return pd.to_numeric(plot_frame[column], errors="coerce").abs().sum() > 0
+        return True
+
+    if "persistence_image_h0" in plot_frame.columns:
+        candidate_metrics = [
             ("wasserstein_h0", "Wasserstein H0"),
             ("wasserstein_h1", "Wasserstein H1"),
             ("persistence_image_h0", "Persistence Image H0"),
             ("persistence_image_h1", "Persistence Image H1"),
         ]
     else:
-        metrics = [
+        candidate_metrics = [
             ("wasserstein_h0", "Wasserstein H0"),
             ("wasserstein_h1", "Wasserstein H1"),
             ("betti_dist_h0", "BettiDist H0"),
             ("betti_dist_h1", "BettiDist H1"),
         ]
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10), constrained_layout=True)
-    for ax, (column, title) in zip(axes.flatten(), metrics, strict=True):
+    metrics = [(column, title) for column, title in candidate_metrics if has_signal(column)]
+    if not metrics:
+        metrics = [("wasserstein_h0", "Wasserstein H0")]
+
+    ncols = min(2, len(metrics))
+    nrows = int(np.ceil(len(metrics) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7 * ncols, 4.8 * nrows), constrained_layout=True)
+    axes_array = np.asarray(axes, dtype=object).reshape(-1)
+    for ax, (column, title) in zip(axes_array, metrics, strict=False):
         matrix = plot_frame.pivot_table(
             index="genre_top",
             columns="ratio_percent",
@@ -396,6 +451,8 @@ def save_topology_metric_panel(
         ax.set_ylabel("")
         ax.tick_params(axis="x", rotation=0)
         ax.tick_params(axis="y", rotation=0)
+    for ax in axes_array[len(metrics):]:
+        ax.axis("off")
 
     fig.suptitle(f"Topology Preservation - {clean_label(method)} vs Anchor", fontsize=16)
     fig.savefig(output_path, dpi=200)
@@ -437,5 +494,75 @@ def save_topology_performance_scatter(
         sns.move_legend(ax, "upper left", bbox_to_anchor=(1.02, 1.0), frameon=True)
 
     fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+    return output_path
+
+
+def save_vicreg_component_curves(
+    checkpoint_dir: Path,
+    output_path: Path,
+    sensing_pair: str | None = None,
+) -> Path:
+    import torch
+
+    ckpts = sorted(checkpoint_dir.glob("cs_vicreg_*.pt"))
+    if sensing_pair:
+        ckpts = [p for p in ckpts if sensing_pair in p.stem]
+
+    records: list[dict] = []
+    for ckpt in ckpts:
+        payload = torch.load(ckpt, map_location="cpu", weights_only=False)
+        source = str(payload["source_name"])
+        ratio = int(payload["ratio"])
+        pair = str(payload["sensing_pair"])
+        emb_dim = int(payload["embedding_dim"])
+        for row in payload.get("epoch_history", []):
+            records.append({
+                "source": source,
+                "sensing_pair": pair,
+                "embedding_dim": emb_dim,
+                "ratio": ratio,
+                "epoch": row["epoch"],
+                "inv": row["val_inv"],
+                "var": row["val_var"],
+                "cov": row["val_cov"],
+            })
+
+    if not records:
+        raise ValueError(f"no epoch_history found in checkpoints under {checkpoint_dir}")
+
+    frame = pd.DataFrame.from_records(records)
+
+    pairs = sorted(frame["sensing_pair"].unique())
+    dims = sorted(frame["embedding_dim"].unique())
+    components = ["inv", "var", "cov"]
+    component_labels = {"inv": "Invariance", "var": "Variance", "cov": "Covariance"}
+    colors = {10: "#1f77b4", 20: "#ff7f0e", 30: "#2ca02c", 50: "#d62728"}
+
+    n_rows = len(pairs) * len(dims)
+    n_cols = len(components)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 3.5 * n_rows), squeeze=False)
+
+    row_idx = 0
+    for pair in pairs:
+        for dim in dims:
+            sub = frame[(frame["sensing_pair"] == pair) & (frame["embedding_dim"] == dim)]
+            for col_idx, comp in enumerate(components):
+                ax = axes[row_idx][col_idx]
+                for ratio in sorted(sub["ratio"].unique()):
+                    s = sub[sub["ratio"] == ratio].sort_values("epoch")
+                    ax.plot(s["epoch"], s[comp], color=colors.get(ratio, "gray"),
+                            label=f"r={ratio}%", linewidth=1.5)
+                ax.set_title(f"{pair} d={dim} — {component_labels[comp]}", fontsize=9)
+                ax.set_xlabel("Epoch")
+                ax.set_ylabel(component_labels[comp])
+                ax.legend(fontsize=7)
+                ax.grid(True, alpha=0.3)
+            row_idx += 1
+
+    fig.suptitle("CS-VICReg validation loss components by ratio", fontsize=12, y=1.01)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return output_path

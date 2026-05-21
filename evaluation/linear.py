@@ -26,6 +26,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 
 from evaluation.visualizations import (
+    configure_anchor_baseline,
     save_confusion_matrix_plot,
     save_dual_metric_method_plot,
     save_ratio_metric_plot,
@@ -200,7 +201,7 @@ def infer_split_paths(parquet_path: Path) -> tuple[str, dict[str, Path]]:
 
 
 def discover_method_parquets(data_root: Path, config: dict) -> dict[str, pd.DataFrame]:
-    groups: dict[str, pd.DataFrame] = {}
+    accumulated: dict[str, list[pd.DataFrame]] = {}
     for path in sorted(data_root.glob("*.parquet")):
         frame = pd.read_parquet(path)
         required = {"method", "split", "ratio_percent", "m_dim", "seed", "track_id", "genre_top"}
@@ -225,8 +226,12 @@ def discover_method_parquets(data_root: Path, config: dict) -> dict[str, pd.Data
                 )
             if not passes_run_filters(run_name, method, ratio_value, config):
                 continue
-            if set(group["split"].unique()) >= set(SPLITS):
-                groups[run_name] = group.copy()
+            accumulated.setdefault(run_name, []).append(group.copy())
+    groups: dict[str, pd.DataFrame] = {}
+    for run_name, frames in accumulated.items():
+        combined = pd.concat(frames, ignore_index=True)
+        if set(combined["split"].unique()) >= set(SPLITS):
+            groups[run_name] = combined
     return groups
 
 
@@ -1020,6 +1025,7 @@ def sensing_methods(frame: pd.DataFrame) -> list[str]:
 def main() -> int:
     args = parse_args()
     config = load_config(args.config, DEFAULT_CONFIG)
+    configure_anchor_baseline(config)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     classifier = str(config["classifier"]).lower()
@@ -1125,6 +1131,8 @@ def main() -> int:
         topology_metrics = ["persistence_image_h0", "persistence_image_h1", "betti_dist_h0", "betti_dist_h1", "wasserstein_h0", "wasserstein_h1"]
         for topology_metric in topology_metrics:
             if topology_metric not in topology_joined.columns:
+                continue
+            if topology_metric.endswith("_h1") and pd.to_numeric(topology_joined[topology_metric], errors="coerce").abs().sum() == 0:
                 continue
             for performance_metric in ["test_f1_macro", "test_pr_auc_macro"]:
                 save_topology_performance_scatter(

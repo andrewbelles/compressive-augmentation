@@ -9,7 +9,7 @@ genres: []
 max_tracks_per_genre: 800
 seed: 0
 
-max_homology_dim: 1
+max_homology_dim: 0
 n_perm: 256
 metric: euclidean
 

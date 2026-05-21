@@ -2,12 +2,14 @@
 #
 # audio.py  Andrew Belles  May 8th, 2026
 #
-# Audio Barlow Twins model and mel crop utilities.
+# Audio Barlow Twins + CS-VICReg models and mel crop/sensing utilities.
 #
 
+import math
 import random
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -232,3 +234,222 @@ def supervised_contrastive_loss(left: torch.Tensor, right: torch.Tensor, labels:
     log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-12))
     positives_per_row = positive_mask.sum(dim=1).clamp_min(1.0)
     return -((positive_mask * log_prob).sum(dim=1) / positives_per_row).mean()
+
+
+class _ResBlock(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.bn2(self.conv2(out))
+        return F.relu(out + residual, inplace=True)
+
+
+class CSEncoder(nn.Module):
+    def __init__(self, embedding_dim: int, base_channels: int, dropout: float) -> None:
+        super().__init__()
+        channels = [base_channels, base_channels * 2, base_channels * 4, base_channels * 8]
+        layers: list[nn.Module] = []
+        in_ch = 1
+        for out_ch in channels:
+            layers.extend([
+                nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(out_ch),
+                nn.ReLU(inplace=True),
+                _ResBlock(out_ch),
+                nn.AvgPool2d(kernel_size=2),
+            ])
+            in_ch = out_ch
+        self.features = nn.Sequential(*layers)
+        self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+        self.head = nn.Linear(channels[-1] * 2, embedding_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feat = self.features(x)
+        pooled = torch.cat([feat.mean(dim=(2, 3)), feat.amax(dim=(2, 3))], dim=1)
+        return self.head(self.dropout(pooled))
+
+
+def _next_power_of_two(n: int) -> int:
+    return 1 << (n - 1).bit_length()
+
+
+def _fwht_inplace(x: torch.Tensor) -> torch.Tensor:
+    n = x.shape[-1]
+    h = 1
+    while h < n:
+        x = x.reshape(-1, h * 2)
+        u = x[:, :h].clone()
+        v = x[:, h:].clone()
+        x[:, :h] = u + v
+        x[:, h:] = u - v
+        x = x.reshape(-1)
+        h *= 2
+    return x
+
+
+def srht_backproject(x_flat: torch.Tensor, m: int) -> torch.Tensor:
+    d = x_flat.shape[0]
+    d2 = _next_power_of_two(d)
+    xp = F.pad(x_flat, (0, d2 - d))
+    signs = torch.randint(0, 2, (d2,), device=x_flat.device, dtype=x_flat.dtype) * 2 - 1
+    xp = xp * signs
+    xp = _fwht_inplace(xp) / math.sqrt(d2)
+    m = min(m, d2)
+    rows = torch.randperm(d2, device=x_flat.device)[:m]
+    y = xp[rows]
+    z = torch.zeros(d2, device=x_flat.device, dtype=x_flat.dtype)
+    z[rows] = y
+    x_hat = _fwht_inplace(z) / math.sqrt(d2) * signs
+    return x_hat[:d] * (d2 / m)
+
+
+def dct_backproject(x_flat: torch.Tensor, m: int) -> torch.Tensor:
+    d = x_flat.shape[0]
+    x_np = x_flat.cpu().numpy().astype(np.float64)
+    from scipy.fft import dct, idct
+    coeffs = dct(x_np, norm="ortho")
+    idx = np.random.choice(d, size=min(m, d), replace=False)
+    z = np.zeros(d, dtype=np.float64)
+    z[idx] = coeffs[idx]
+    x_hat = idct(z, norm="ortho").astype(np.float32)
+    return torch.from_numpy(x_hat).to(x_flat.device)
+
+
+def gaussian_backproject(x_flat: torch.Tensor, m: int) -> torch.Tensor:
+    d = x_flat.shape[0]
+    m = min(m, d)
+    Phi = torch.randn(m, d, device=x_flat.device, dtype=x_flat.dtype) / math.sqrt(m)
+    y = Phi @ x_flat
+    return Phi.t() @ y
+
+
+def cs_view_pair(
+    mel: torch.Tensor,
+    sensing_pair: str,
+    ratio: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    c, f, t = mel.shape
+    x_flat = mel.reshape(-1)
+    d = x_flat.shape[0]
+    m = max(1, int(round(d * ratio / 100.0)))
+
+    known = {"srht", "dct", "gaussian"}
+    parts = sensing_pair.split("_")
+    left_name = parts[0]
+    right_name = "_".join(parts[1:]) if len(parts) > 1 else parts[0]
+    if left_name not in known or right_name not in known:
+        raise ValueError(f"unsupported sensing_pair: {sensing_pair!r}")
+
+    def apply(name: str) -> torch.Tensor:
+        if name == "srht":
+            return srht_backproject(x_flat, m)
+        if name == "dct":
+            return dct_backproject(x_flat, m)
+        if name == "gaussian":
+            return gaussian_backproject(x_flat, m)
+        raise ValueError(f"unknown sensing method: {name}")
+
+    v1 = apply(left_name).reshape(c, f, t)
+    v2 = apply(right_name).reshape(c, f, t)
+    return v1, v2
+
+
+class CSVICRegDataset(Dataset):
+    def __init__(
+        self,
+        data_dir: Path,
+        split: str,
+        sensing_pair: str,
+        ratio: int,
+        augment_config: dict,
+    ) -> None:
+        self.data_dir = data_dir.resolve()
+        self.frame = load_manifest(self.data_dir, split)
+        self.sensing_pair = sensing_pair
+        self.ratio = ratio
+        self.augment_config = augment_config
+        self.crop_frames = int(augment_config["crop_frames"])
+
+    def __len__(self) -> int:
+        return len(self.frame)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        row = self.frame.iloc[index].to_dict()
+        mel_path = resolve_relative_data_path(self.data_dir, str(row["mel_path"]))
+        mel = torch.load(mel_path, map_location="cpu", weights_only=True).float()
+        if mel.ndim != 2:
+            raise ValueError(f"expected 2D mel tensor at {mel_path}")
+
+        mel = crop_or_pad(mel, self.crop_frames, random_crop=True)
+        time_w = int(self.augment_config.get("time_mask_width", 0))
+        freq_w = int(self.augment_config.get("freq_mask_width", 0))
+        if time_w > 0 or freq_w > 0:
+            mel = time_frequency_mask(mel, time_w, freq_w)
+
+        mel_t = mel.unsqueeze(0).contiguous()
+        v1, v2 = cs_view_pair(mel_t, self.sensing_pair, self.ratio)
+        return v1.contiguous(), v2.contiguous()
+
+
+class CSVICRegModel(nn.Module):
+    def __init__(
+        self,
+        embedding_dim: int,
+        base_channels: int,
+        dropout: float,
+        projection_hidden_dim: int,
+        projection_dim: int,
+    ) -> None:
+        super().__init__()
+        self.encoder = CSEncoder(embedding_dim, base_channels, dropout)
+        self.projector = nn.Sequential(
+            nn.Linear(embedding_dim, projection_hidden_dim, bias=False),
+            nn.BatchNorm1d(projection_hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(projection_hidden_dim, projection_hidden_dim, bias=False),
+            nn.BatchNorm1d(projection_hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(projection_hidden_dim, projection_dim, bias=False),
+        )
+
+    def forward(self, x1: torch.Tensor, x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        h1 = self.encoder(x1)
+        h2 = self.encoder(x2)
+        z1 = self.projector(h1)
+        z2 = self.projector(h2)
+        return h1, h2, z1, z2
+
+
+def vicreg_loss(
+    z1: torch.Tensor,
+    z2: torch.Tensor,
+    inv_w: float,
+    var_w: float,
+    cov_w: float,
+    gamma: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    inv = F.mse_loss(z1, z2)
+
+    def variance_term(z: torch.Tensor) -> torch.Tensor:
+        std = z.std(dim=0, correction=1).clamp_min(1e-4)
+        return F.relu(gamma - std).mean()
+
+    var = 0.5 * (variance_term(z1) + variance_term(z2))
+
+    def covariance_term(z: torch.Tensor) -> torch.Tensor:
+        n, d = z.shape
+        z_centered = z - z.mean(dim=0)
+        cov = (z_centered.T @ z_centered) / (n - 1)
+        return off_diagonal(cov).pow_(2).sum() / d
+
+    cov = 0.5 * (covariance_term(z1) + covariance_term(z2))
+
+    total = inv_w * inv + var_w * var + cov_w * cov
+    return total, inv, var, cov

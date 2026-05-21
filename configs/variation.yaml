@@ -7,7 +7,7 @@ splits: [training]
 genres: []
 bootstrap_replicates: 10
 tracks_per_genre: 800
-max_homology_dim: 1
+max_homology_dim: 0
 n_perm: 256
 metric: euclidean
 standardize_rows: true

@@ -62,9 +62,9 @@ ph:
   enabled: true
   k: 30
   features: [betti, entropy]
-  homology_dims: [0, 1]
+  homology_dims: [0]
   betti_grid_size: 64
   filtration_max: 3.0
-  max_homology_dim: 1
+  max_homology_dim: 0
   n_perm: 64
   cache_features: true
