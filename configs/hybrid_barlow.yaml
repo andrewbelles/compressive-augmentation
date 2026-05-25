@@ -1,0 +1,36 @@
+device: auto
+force_retrain: true 
+seed: 17
+dataset: fma_small_mel
+
+sensing_pair: dct_dct       # CS family for view 1 (DCT truncation); view 2 is standard augmentation
+
+# Grid axes — use single-element lists for a single point, multi for sweep
+augmentations: [a2, a3]     # strong branch policy applied to both views in symmetric mode
+ratios: [20, 30, 40, 50]    # moderate regime: PSNR 22-27 dB, genuinely different views
+projection_dims: [1024]
+embedding_dims: [256]
+cs_prob: 1.0                # always apply CS (symmetric mode ignores cs_prob)
+symmetric: true             # both views independently augmented + independently DCT-backprojected
+
+base_channels: 32
+dropout: 0.0
+projection_hidden_dim: 1024
+batch_size: 128
+num_workers: 4
+epochs: 300
+learning_rate: 1.0e-4
+weight_decay: 1.0e-4
+warmup_epochs: 20
+gl2_strip: 5
+gl5_threshold: 3.0
+gl5_strip: 5
+gl5_grace: 50
+barlow_lambda: 0.005        # match ABT lambda
+
+augment:
+  crop_frames: 256            # match ABT crop_frames
+  resize_scale: [0.85, 1.0]
+  linear_fader_strength: 0.15
+  time_mask_width: 24
+  freq_mask_width: 8

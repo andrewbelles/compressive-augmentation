@@ -34,8 +34,23 @@ from evaluation.visualizations import (
     save_topology_performance_scatter,
 )
 from evaluation.filters import FILTER_DEFAULTS, passes_run_filters
-from compression.common import SPLITS, active_feature_columns, embedding_columns
 from compression.train_utils import load_config
+
+SPLITS = ("training", "validation", "test")
+
+
+def embedding_columns(frame: pd.DataFrame) -> list[str]:
+    columns = sorted(col for col in frame.columns if col.startswith("embedding_"))
+    if not columns:
+        raise ValueError("frame has no embedding columns")
+    return columns
+
+
+def active_feature_columns(frame: pd.DataFrame, m_dim: int) -> list[str]:
+    columns = embedding_columns(frame)
+    if int(m_dim) > len(columns):
+        raise ValueError(f"requested m_dim={m_dim} but only {len(columns)} embedding columns exist")
+    return columns[: int(m_dim)]
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "configs" / "linear.yaml"
@@ -91,6 +106,13 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path(__file__).resolve().parent.parent / "compression" / "data",
         help="Directory of compression parquet split outputs. Used when --parquet is omitted.",
+    )
+    parser.add_argument(
+        "-f",
+        "--file",
+        type=Path,
+        default=None,
+        help="Path to a single parquet file (any split). Sibling split files are inferred automatically.",
     )
     parser.add_argument(
         "-c",
@@ -841,7 +863,7 @@ def evaluate_group(
         threshold=float(config["weight_threshold"]),
     )
 
-    first = group.iloc[0]
+    first = group.iloc[0].to_dict()
     extra_metadata = {}
     if {"code_dim", "target_active"}.issubset(group.columns):
         extra_metadata = {
@@ -901,7 +923,8 @@ def evaluate_group(
             title=f"Confusion Matrix - {format_model_name(output_prefix)}",
         )
 
-    log(f"linear {run_descriptor(first)} f1={test_metrics['f1_macro']:.3f} pr_auc={test_metrics['pr_auc_macro']:.3f}")
+    first_series = group.iloc[0]
+    log(f"linear {run_descriptor(first_series)} f1={test_metrics['f1_macro']:.3f} pr_auc={test_metrics['pr_auc_macro']:.3f}")
     return summary_frame
 
 
@@ -1036,9 +1059,14 @@ def main() -> int:
     groups: dict[str, pd.DataFrame] = {}
     if bool(config.get("include_anchor", False)):
         groups.update(anchor_group(config))
-    if args.parquet is not None:
-        parquet_path = args.parquet.expanduser().resolve()
-        frame = pd.read_parquet(parquet_path)
+    single_file = args.file if args.file is not None else args.parquet
+    if single_file is not None:
+        parquet_path = single_file.expanduser().resolve()
+        _, split_paths = infer_split_paths(parquet_path)
+        frame = pd.concat(
+            [pd.read_parquet(p) for p in split_paths.values()],
+            ignore_index=True,
+        )
         required = {"method", "split", "ratio_percent", "m_dim", "seed", "track_id", "genre_top"}
         if not required.issubset(frame.columns):
             raise ValueError(f"parquet does not use the method schema: {parquet_path}")
@@ -1060,7 +1088,7 @@ def main() -> int:
                 )
             if passes_run_filters(run_name, method, ratio_value, config):
                 groups[run_name] = group.copy()
-        source_description = f"parquet={parquet_path}"
+        source_description = f"file={parquet_path}"
     else:
         compression_data_root = args.data_dir.expanduser().resolve()
         groups.update(discover_method_parquets(compression_data_root, config))

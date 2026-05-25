@@ -210,14 +210,14 @@ def off_diagonal(matrix: torch.Tensor) -> torch.Tensor:
     return matrix.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
 
 
-def barlow_twins_loss(left: torch.Tensor, right: torch.Tensor, lambd: float) -> torch.Tensor:
+def barlow_twins_loss(left: torch.Tensor, right: torch.Tensor, lambd: float) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     batch_size = left.size(0)
     left = (left - left.mean(dim=0)) / left.std(dim=0).clamp_min(1e-6)
     right = (right - right.mean(dim=0)) / right.std(dim=0).clamp_min(1e-6)
     correlation = left.T @ right / batch_size
     on_diag = torch.diagonal(correlation).add_(-1.0).pow_(2).sum()
     off_diag = off_diagonal(correlation).pow_(2).sum()
-    return on_diag + float(lambd) * off_diag
+    return on_diag + float(lambd) * off_diag, on_diag, off_diag
 
 
 def supervised_contrastive_loss(left: torch.Tensor, right: torch.Tensor, labels: torch.Tensor, temperature: float) -> torch.Tensor:
@@ -281,15 +281,12 @@ def _next_power_of_two(n: int) -> int:
 
 
 def _fwht_inplace(x: torch.Tensor) -> torch.Tensor:
-    n = x.shape[-1]
+    n = x.shape[0]
     h = 1
     while h < n:
         x = x.reshape(-1, h * 2)
-        u = x[:, :h].clone()
-        v = x[:, h:].clone()
-        x[:, :h] = u + v
-        x[:, h:] = u - v
-        x = x.reshape(-1)
+        x = torch.cat([x[:, :h] + x[:, h:], x[:, :h] - x[:, h:]], dim=1)
+        x = x.reshape(n)
         h *= 2
     return x
 
@@ -307,7 +304,7 @@ def srht_backproject(x_flat: torch.Tensor, m: int) -> torch.Tensor:
     z = torch.zeros(d2, device=x_flat.device, dtype=x_flat.dtype)
     z[rows] = y
     x_hat = _fwht_inplace(z) / math.sqrt(d2) * signs
-    return x_hat[:d] * (d2 / m)
+    return x_hat[:d]
 
 
 def dct_backproject(x_flat: torch.Tensor, m: int) -> torch.Tensor:
@@ -315,7 +312,9 @@ def dct_backproject(x_flat: torch.Tensor, m: int) -> torch.Tensor:
     x_np = x_flat.cpu().numpy().astype(np.float64)
     from scipy.fft import dct, idct
     coeffs = dct(x_np, norm="ortho")
-    idx = np.random.choice(d, size=min(m, d), replace=False)
+    probs = 1.0 / (np.arange(1, d + 1) ** 0.5)
+    probs /= probs.sum()
+    idx = np.random.choice(d, size=min(m, d), replace=False, p=probs)
     z = np.zeros(d, dtype=np.float64)
     z[idx] = coeffs[idx]
     x_hat = idct(z, norm="ortho").astype(np.float32)
@@ -361,6 +360,58 @@ def cs_view_pair(
     return v1, v2
 
 
+_POLICY_LADDER = ["a0", "a1", "a2", "a3", "a4"]
+
+
+class HybridBarlowDataset(Dataset):
+    def __init__(
+        self,
+        data_dir: Path,
+        split: str,
+        policy_strong: str,
+        augment_config: dict,
+        sensing_pair: str,
+        ratio: int,
+        cs_prob: float = 1.0,
+        symmetric: bool = False,
+    ) -> None:
+        self.data_dir = data_dir.resolve()
+        self.frame = load_manifest(self.data_dir, split)
+        self.policy_strong = str(policy_strong)
+        idx = _POLICY_LADDER.index(self.policy_strong)
+        self.policy_weak = _POLICY_LADDER[max(0, idx - 1)]
+        self.augment_config = augment_config
+        self.sensing_pair = sensing_pair
+        self.ratio = ratio
+        self.cs_prob = float(cs_prob)
+        self.symmetric = bool(symmetric)
+
+    def __len__(self) -> int:
+        return len(self.frame)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        row = self.frame.iloc[index].to_dict()
+        mel_path = resolve_relative_data_path(self.data_dir, str(row["mel_path"]))
+        mel = torch.load(mel_path, map_location="cpu", weights_only=True).float()
+        if mel.ndim != 2:
+            raise ValueError(f"expected 2D mel tensor at {mel_path}")
+
+        if self.symmetric:
+            aug1 = apply_policy(mel, self.policy_strong, self.augment_config).unsqueeze(0).contiguous()
+            aug2 = apply_policy(mel, self.policy_strong, self.augment_config).unsqueeze(0).contiguous()
+            v1, _ = cs_view_pair(aug1, self.sensing_pair, self.ratio)
+            v2, _ = cs_view_pair(aug2, self.sensing_pair, self.ratio)
+            return v1, v2.contiguous()
+
+        v2 = apply_policy(mel, self.policy_weak, self.augment_config).unsqueeze(0).contiguous()
+        aug = apply_policy(mel, self.policy_strong, self.augment_config).unsqueeze(0).contiguous()
+        if self.cs_prob >= 1.0 or random.random() < self.cs_prob:
+            v1, _ = cs_view_pair(aug, self.sensing_pair, self.ratio)
+        else:
+            v1 = aug
+        return v1, v2.contiguous()
+
+
 class CSVICRegDataset(Dataset):
     def __init__(
         self,
@@ -369,6 +420,7 @@ class CSVICRegDataset(Dataset):
         sensing_pair: str,
         ratio: int,
         augment_config: dict,
+        ref_coords: dict[str, np.ndarray] | None = None,
     ) -> None:
         self.data_dir = data_dir.resolve()
         self.frame = load_manifest(self.data_dir, split)
@@ -376,11 +428,12 @@ class CSVICRegDataset(Dataset):
         self.ratio = ratio
         self.augment_config = augment_config
         self.crop_frames = int(augment_config["crop_frames"])
+        self.ref_coords = ref_coords
 
     def __len__(self) -> int:
         return len(self.frame)
 
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index: int):
         row = self.frame.iloc[index].to_dict()
         mel_path = resolve_relative_data_path(self.data_dir, str(row["mel_path"]))
         mel = torch.load(mel_path, map_location="cpu", weights_only=True).float()
@@ -395,10 +448,16 @@ class CSVICRegDataset(Dataset):
 
         mel_t = mel.unsqueeze(0).contiguous()
         v1, v2 = cs_view_pair(mel_t, self.sensing_pair, self.ratio)
+
+        if self.ref_coords is not None:
+            track_id = str(row["track_id"])
+            ref = torch.from_numpy(self.ref_coords[track_id].copy())
+            return v1.contiguous(), v2.contiguous(), ref
+
         return v1.contiguous(), v2.contiguous()
 
 
-class CSVICRegModel(nn.Module):
+class CSBarlowModel(nn.Module):
     def __init__(
         self,
         embedding_dim: int,
@@ -413,9 +472,6 @@ class CSVICRegModel(nn.Module):
             nn.Linear(embedding_dim, projection_hidden_dim, bias=False),
             nn.BatchNorm1d(projection_hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(projection_hidden_dim, projection_hidden_dim, bias=False),
-            nn.BatchNorm1d(projection_hidden_dim),
-            nn.ReLU(inplace=True),
             nn.Linear(projection_hidden_dim, projection_dim, bias=False),
         )
 
@@ -425,6 +481,46 @@ class CSVICRegModel(nn.Module):
         z1 = self.projector(h1)
         z2 = self.projector(h2)
         return h1, h2, z1, z2
+
+
+def knn_neighbourhood_loss(
+    u: torch.Tensor,
+    r: torch.Tensor,
+    k: int,
+    margin: float,
+    tau: float,
+) -> torch.Tensor:
+    B = u.size(0)
+    k = min(k, B - 2)
+    if k < 1:
+        return u.sum() * 0.0
+
+    D_R = torch.cdist(r.float(), r.float()).pow(2)
+    D_U = torch.cdist(u, u).pow(2)
+
+    eye = torch.eye(B, dtype=torch.bool, device=u.device)
+    D_R_masked = D_R.masked_fill(eye, float("inf"))
+
+    _, pos_idx = D_R_masked.topk(k, dim=1, largest=False)
+
+    total = torch.tensor(0.0, device=u.device)
+    count = 0
+    for i in range(B):
+        pos = pos_idx[i]
+        neg_mask = torch.ones(B, dtype=torch.bool, device=u.device)
+        neg_mask[i] = False
+        neg_mask[pos] = False
+        neg = neg_mask.nonzero(as_tuple=True)[0]
+        if neg.numel() == 0:
+            continue
+        d_pos = D_U[i][pos].unsqueeze(1)
+        d_neg = D_U[i][neg].unsqueeze(0)
+        total = total + F.softplus((d_pos - d_neg + margin) / tau).mean()
+        count += 1
+
+    if count == 0:
+        return u.sum() * 0.0
+    return total / count
 
 
 def vicreg_loss(

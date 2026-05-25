@@ -1,0 +1,39 @@
+device: auto
+seed: 0
+dataset: fma_small_mel
+embedding_dims: [256]
+sensing_pairs:
+  - dct_dct
+  - srht_dct
+ratios: [5]
+base_channels: 32
+dropout: 0.0
+projection_hidden_dim: 1024
+projection_dim: 128
+batch_size: 128
+num_workers: 4
+epochs: 200
+learning_rate: 3.0e-4
+weight_decay: 1.0e-4
+warmup_epochs: 5
+gl2_strip: 5
+gl5_threshold: 2.0
+gl5_strip: 5
+gl5_grace: 20
+barlow_lambda: 0.05
+topo_reg:
+  enabled: false
+  ph_mode: raw            # "raw" (flat mel) or "umap16" (from ph cache)
+  ph_cache_dir: persistence/data
+  ref_dim: 0              # 0 = no PCA; >0 = PCA-reduce raw mel ref to this dim
+  lambda_knn: 0.01        # try 1e-3, 1e-2, 1e-1
+  knn_k: 10
+  knn_margin: 0.5
+  knn_tau: 0.1
+  lambda_topo: 0.0        # 0 = kNN only; try 1e-4, 1e-3, 1e-2 once kNN works
+  topo_alpha_0: 1.0
+  topo_alpha_1: 0.1
+augment:
+  crop_frames: 128
+  time_mask_width: 0
+  freq_mask_width: 0

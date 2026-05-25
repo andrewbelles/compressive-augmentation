@@ -1,1 +1,0 @@
-"""Persistent-homology experiment utilities."""

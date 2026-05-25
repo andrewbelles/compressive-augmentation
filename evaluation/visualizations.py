@@ -239,6 +239,7 @@ def save_ratio_metric_plot(
 
     if not compressed.empty:
         compressed["ratio_percent"] = compressed["ratio_percent"].astype(float)
+        compressed[metric_column] = pd.to_numeric(compressed[metric_column], errors="coerce")
         if method_filter is None:
             sns.lineplot(
                 data=compressed,
@@ -275,7 +276,7 @@ def save_ratio_metric_plot(
     axis.set_xlabel("Compression Ratio m/N (%)")
     axis.set_ylabel(clean_label(metric_column.replace("test_", "")))
     set_tight_score_axis(axis, compressed[metric_column] if metric_column in compressed else [], anchor_values)
-    axis.set_xlim(left=0.0, right=max_ratio)
+    axis.set_xlim(left=0.0, right=float(max_ratio))
     axis.set_title(title)
     axis.grid(True, which="both", alpha=0.25)
     if axis.get_legend() is not None:
@@ -300,6 +301,9 @@ def save_dual_metric_method_plot(
         plot_frame = plot_frame[plot_frame["method"] == method_filter].copy()
     if not plot_frame.empty:
         plot_frame["ratio_percent"] = plot_frame["ratio_percent"].astype(float)
+        for _mc in ["test_f1_macro", "test_pr_auc_macro"]:
+            if _mc in plot_frame.columns:
+                plot_frame[_mc] = pd.to_numeric(plot_frame[_mc], errors="coerce")
         melted = plot_frame.melt(
             id_vars=["method", "ratio_percent", "seed"],
             value_vars=["test_f1_macro", "test_pr_auc_macro"],
@@ -328,7 +332,7 @@ def save_dual_metric_method_plot(
     axis.set_xlabel("Compression Ratio m/d (%)")
     axis.set_ylabel("Score")
     set_tight_score_axis(axis, plot_frame[["test_f1_macro", "test_pr_auc_macro"]].to_numpy().reshape(-1) if not plot_frame.empty else [], anchor_values)
-    axis.set_xlim(left=0.0, right=ratio_axis_max(plot_frame))
+    axis.set_xlim(left=0.0, right=float(ratio_axis_max(plot_frame)))
     axis.set_title(title)
     axis.grid(True, which="both", alpha=0.25)
     if axis.get_legend() is not None:
@@ -370,7 +374,7 @@ def save_topology_preservation_plot(
 
     axis.set_xlabel("Compression Ratio m/N (%)")
     axis.set_ylabel(clean_label(value_column))
-    axis.set_xlim(left=0.0, right=ratio_axis_max(plot_frame))
+    axis.set_xlim(left=0.0, right=float(ratio_axis_max(plot_frame)))
     axis.set_title(title)
     axis.grid(True, which="both", alpha=0.25)
     if axis.get_legend() is not None:
@@ -498,14 +502,14 @@ def save_topology_performance_scatter(
     return output_path
 
 
-def save_vicreg_component_curves(
+def save_barlow_component_curves(
     checkpoint_dir: Path,
     output_path: Path,
     sensing_pair: str | None = None,
 ) -> Path:
     import torch
 
-    ckpts = sorted(checkpoint_dir.glob("cs_vicreg_*.pt"))
+    ckpts = sorted(checkpoint_dir.glob("cs_barlow_*.pt"))
     if sensing_pair:
         ckpts = [p for p in ckpts if sensing_pair in p.stem]
 
@@ -523,9 +527,8 @@ def save_vicreg_component_curves(
                 "embedding_dim": emb_dim,
                 "ratio": ratio,
                 "epoch": row["epoch"],
-                "inv": row["val_inv"],
-                "var": row["val_var"],
-                "cov": row["val_cov"],
+                "on_diag": row["val_on_diag"],
+                "off_diag": row["val_off_diag"],
             })
 
     if not records:
@@ -535,9 +538,9 @@ def save_vicreg_component_curves(
 
     pairs = sorted(frame["sensing_pair"].unique())
     dims = sorted(frame["embedding_dim"].unique())
-    components = ["inv", "var", "cov"]
-    component_labels = {"inv": "Invariance", "var": "Variance", "cov": "Covariance"}
-    colors = {10: "#1f77b4", 20: "#ff7f0e", 30: "#2ca02c", 50: "#d62728"}
+    components = ["on_diag", "off_diag"]
+    component_labels = {"on_diag": "On-diagonal", "off_diag": "Off-diagonal"}
+    colors = {1: "#1f77b4", 3: "#ff7f0e", 7: "#2ca02c", 10: "#d62728"}
 
     n_rows = len(pairs) * len(dims)
     n_cols = len(components)
@@ -560,7 +563,7 @@ def save_vicreg_component_curves(
                 ax.grid(True, alpha=0.3)
             row_idx += 1
 
-    fig.suptitle("CS-VICReg validation loss components by ratio", fontsize=12, y=1.01)
+    fig.suptitle("CS-Barlow validation loss components by ratio", fontsize=12, y=1.01)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")

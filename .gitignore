@@ -1,18 +1,18 @@
-.codex 
-.env 
-.clangd 
-.venv/ 
+.codex
+.env
+.clangd
+.venv/
 .cache/
 
-__pycache__/ 
+__pycache__/
 
-!/preprocess/data/.gitkeep 
-/preprocess/data/* 
+!/preprocess/data/.gitkeep
+/preprocess/data/*
 !/preprocess/images/.gitkeep
 
-/compression/data/* 
+/compression/data/*
 !/compression/data/.gitkeep
-/compression/images/* 
+/compression/images/*
 !/compression/images/.gitkeep
 
 /representation/checkpoints/*
@@ -23,15 +23,8 @@ __pycache__/
 !/representation/images/.gitkeep
 
 !/evaluation/data/.gitkeep
-/evaluation/data/* 
+/evaluation/data/*
 !/evaluation/images/.gitkeep
-/evaluation/images/* 
+/evaluation/images/*
 
-/persistence/data/*
-!/persistence/data/.gitkeep
-/persistence/images/*
-!/persistence/images/.gitkeep
-
-/compression/__pycache__/
-/preprocess/__pycache__/ 
-/persistence/__pycache__/
+logs/
