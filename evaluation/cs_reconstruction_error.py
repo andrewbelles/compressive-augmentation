@@ -6,8 +6,6 @@
 # training split.  Produces a table (stdout) and a PSNR-vs-ratio plot.
 #
 
-from __future__ import annotations
-
 import argparse
 import math
 import sys

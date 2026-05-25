@@ -111,16 +111,13 @@ def mixup_batch(left: torch.Tensor, right: torch.Tensor, alpha: float) -> tuple[
 
 
 class BarlowCropDataset(Dataset):
-    def __init__(self, data_dir: Path, split: str, policy: str, augment_config: dict, paired: bool, return_labels: bool = False):
+    def __init__(self, data_dir: Path, split: str, policy: str, augment_config: dict, paired: bool):
         self.data_dir = data_dir.resolve()
         self.root_dir = self.data_dir.parent
         self.frame = load_manifest(self.data_dir, split)
         self.policy = str(policy)
         self.augment_config = augment_config
         self.paired = bool(paired)
-        self.return_labels = bool(return_labels)
-        genres = sorted(str(value) for value in self.frame["genre_top"].dropna().unique())
-        self.genre_to_index = {genre: index for index, genre in enumerate(genres)}
 
     def __len__(self) -> int:
         return len(self.frame)
@@ -135,9 +132,6 @@ class BarlowCropDataset(Dataset):
         if self.paired:
             left = apply_policy(mel, self.policy, self.augment_config)
             right = left.clone() if self.policy == "a0" else apply_policy(mel, self.policy, self.augment_config)
-            if self.return_labels:
-                label = self.genre_to_index[str(row["genre_top"])]
-                return left.unsqueeze(0).contiguous(), right.unsqueeze(0).contiguous(), label
             return left.unsqueeze(0).contiguous(), right.unsqueeze(0).contiguous()
 
         crop = crop_or_pad(mel, int(self.augment_config["crop_frames"]), random_crop=False)
@@ -219,21 +213,6 @@ def barlow_twins_loss(left: torch.Tensor, right: torch.Tensor, lambd: float) -> 
     off_diag = off_diagonal(correlation).pow_(2).sum()
     return on_diag + float(lambd) * off_diag, on_diag, off_diag
 
-
-def supervised_contrastive_loss(left: torch.Tensor, right: torch.Tensor, labels: torch.Tensor, temperature: float) -> torch.Tensor:
-    if left.size(0) != right.size(0) or left.size(0) != labels.size(0):
-        raise ValueError("left, right, and labels must have matching batch sizes")
-    features = F.normalize(torch.cat([left, right], dim=0), dim=1)
-    repeated_labels = labels.reshape(-1, 1).repeat(2, 1)
-    positive_mask = torch.eq(repeated_labels, repeated_labels.T).float().to(features.device)
-    logits = features @ features.T / max(float(temperature), 1e-6)
-    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
-    self_mask = torch.eye(logits.size(0), dtype=torch.float32, device=features.device)
-    positive_mask = positive_mask * (1.0 - self_mask)
-    exp_logits = torch.exp(logits) * (1.0 - self_mask)
-    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-12))
-    positives_per_row = positive_mask.sum(dim=1).clamp_min(1.0)
-    return -((positive_mask * log_prob).sum(dim=1) / positives_per_row).mean()
 
 
 class _ResBlock(nn.Module):

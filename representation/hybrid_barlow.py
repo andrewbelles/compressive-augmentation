@@ -300,13 +300,11 @@ def train_one(
     gl5_threshold = float(config["gl5_threshold"])
     gl5_strip = int(config["gl5_strip"])
     gl5_grace = int(config["gl5_grace"])
-    crop_frames = int(config["augment"]["crop_frames"])
 
     best_val_loss = float("inf")
     best_state: dict = {}
     best_epoch = 0
     best_val_metrics: dict[str, float] = {}
-    best_probe_f1: float = float("-inf")
     val_loss_history: list[float] = []
     gl2_history: list[float] = []
     epoch_history: list[dict] = []
@@ -322,16 +320,9 @@ def train_one(
         if vl < best_val_loss:
             best_val_loss = vl
             best_val_metrics = dict(val_m)
-
-        probe_f1 = _quick_probe(model, data_dir, crop_frames, device)
-        model.train()
-
-        new_best = math.isfinite(probe_f1) and probe_f1 > best_probe_f1
-        if new_best:
-            best_probe_f1 = probe_f1
             best_state = clone_state(model)
             best_epoch = epoch + 1
-            log(f"source={source} new_best epoch={epoch+1} val_loss={vl:.6f} probe_f1={probe_f1:.4f}")
+            log(f"source={source} new_best epoch={epoch+1} val_loss={vl:.6f}")
 
         epoch_history.append({
             "epoch": epoch + 1,
@@ -339,18 +330,15 @@ def train_one(
             "val_loss": vl,
             "val_on_diag": val_m["on_diag"],
             "val_off_diag": val_m["off_diag"],
-            "probe_val_f1": probe_f1,
         })
 
-        if math.isfinite(probe_f1) and probe_f1 > 0:
-            gl2 = 100.0 * (best_probe_f1 / probe_f1 - 1.0)
-        else:
-            gl2 = 0.0
+        gl2 = 100.0 * (vl / best_val_loss - 1.0)
         gl2_history.append(gl2)
 
-        if len(gl2_history) >= gl2_strip:
-            strip_gl2 = gl2_history[-gl2_strip:]
-            p_k = max(1000.0 * (sum(strip_gl2) / (gl2_strip * max(min(strip_gl2), 1e-8))), 1e-8)
+        if len(val_loss_history) >= gl2_strip:
+            strip = val_loss_history[-gl2_strip:]
+            strip_min = min(strip)
+            p_k = max(1000.0 * (sum(strip) / (gl2_strip * strip_min) - 1.0), 1e-8)
             gl2_str = f" GL2={gl2:.2f} P_k={p_k:.2f}"
         else:
             gl2_str = f" GL2={gl2:.2f}"
@@ -359,7 +347,7 @@ def train_one(
             f"source={source} epoch={epoch+1}/{epochs} "
             f"train_loss={train_m['loss']:.6f} val_loss={vl:.6f} "
             f"on_diag={val_m['on_diag']:.4f} off_diag={val_m['off_diag']:.4f}"
-            f"{gl2_str} probe_f1={probe_f1:.4f}"
+            f"{gl2_str}"
         )
 
         if (epoch + 1 > gl5_grace
@@ -381,7 +369,6 @@ def train_one(
         "dataset": dataset_name,
         "best_epoch": best_epoch,
         "best_val_loss": best_val_loss,
-        "best_probe_f1": best_probe_f1,
         "best_val_on_diag": best_val_metrics.get("on_diag", float("nan")),
         "best_val_off_diag": best_val_metrics.get("off_diag", float("nan")),
         "cs_prob": cs_prob,
@@ -394,7 +381,7 @@ def train_one(
         },
         "augment": dict(config["augment"]),
     }, ckpt_path)
-    report(f"checkpoint source={source} best_epoch={best_epoch} best_probe_f1={best_probe_f1:.4f} path={ckpt_path}")
+    report(f"checkpoint source={source} best_epoch={best_epoch} best_val_loss={best_val_loss:.6f} path={ckpt_path}")
     return ckpt_path
 
 

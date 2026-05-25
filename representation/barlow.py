@@ -20,7 +20,6 @@ from representation.audio import (
     BarlowTwinsModel,
     barlow_twins_loss,
     mixup_batch,
-    supervised_contrastive_loss,
 )
 
 
@@ -29,11 +28,11 @@ DEFAULT_MEL_DIR = Path("preprocess/data/fma_small_mel")
 DEFAULT_CONFIG = {
     "device": "cuda",
     "seed": 17,
-    "embedding_dims": [128, 256, 512, 1024],
+    "embedding_dims": [256],
     "augmentations": ["a0", "a1", "a2", "a3", "a4"],
     "batch_size": 128,
     "num_workers": 4,
-    "epochs": 100,
+    "epochs": 200,
     "learning_rate": 3e-4,
     "weight_decay": 1e-4,
     "base_channels": 32,
@@ -41,11 +40,6 @@ DEFAULT_CONFIG = {
     "projector_hidden_dim": 1024,
     "projector_dim": 1024,
     "barlow_lambda": 0.005,
-    "supcon": {
-        "enabled": True,
-        "weight": 0.1,
-        "temperature": 0.1,
-    },
     "augment": {
         "crop_frames": 256,
         "resize_scale": [0.85, 1.0],
@@ -121,35 +115,19 @@ def train_epoch(
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
-    total_barlow = 0.0
-    total_supcon = 0.0
+    total_on_diag = 0.0
+    total_off_diag = 0.0
     total_items = 0
-    use_supcon = bool(config.get("supcon", {}).get("enabled", False))
 
-    for batch in loader:
-        if use_supcon:
-            left, right, labels = batch
-            labels = labels.to(device, non_blocking=device.type == "cuda")
-        else:
-            left, right = batch
-            labels = None
+    for left, right in loader:
         left = left.to(device, non_blocking=device.type == "cuda")
         right = right.to(device, non_blocking=device.type == "cuda")
-        if policy in {"a2", "a3", "a4"} and not use_supcon:
+        if policy in {"a2", "a3", "a4"}:
             left, right = mixup_batch(left, right, float(config["augment"]["mixup_alpha"]))
 
-        left_embedding, left_projection = model(left)
-        right_embedding, right_projection = model(right)
-        barlow_loss = barlow_twins_loss(left_projection, right_projection, float(config["barlow_lambda"]))
-        supcon_loss = torch.zeros((), dtype=barlow_loss.dtype, device=device)
-        if use_supcon and labels is not None:
-            supcon_loss = supervised_contrastive_loss(
-                left_embedding,
-                right_embedding,
-                labels,
-                float(config["supcon"]["temperature"]),
-            )
-        loss = barlow_loss + float(config["supcon"]["weight"]) * supcon_loss
+        _, left_projection = model(left)
+        _, right_projection = model(right)
+        loss, on_diag, off_diag = barlow_twins_loss(left_projection, right_projection, float(config["barlow_lambda"]))
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -157,15 +135,15 @@ def train_epoch(
 
         batch_size = left.size(0)
         total_loss += float(loss.item()) * batch_size
-        total_barlow += float(barlow_loss.item()) * batch_size
-        total_supcon += float(supcon_loss.item()) * batch_size
+        total_on_diag += float(on_diag.item()) * batch_size
+        total_off_diag += float(off_diag.item()) * batch_size
         total_items += batch_size
 
     denominator = max(1, total_items)
     return {
         "loss": total_loss / denominator,
-        "barlow": total_barlow / denominator,
-        "supcon": total_supcon / denominator,
+        "on_diag": total_on_diag / denominator,
+        "off_diag": total_off_diag / denominator,
     }
 
 
@@ -178,48 +156,32 @@ def validation_epoch(
 ) -> dict[str, float]:
     model.eval()
     total_loss = 0.0
-    total_barlow = 0.0
-    total_supcon = 0.0
+    total_on_diag = 0.0
+    total_off_diag = 0.0
     total_items = 0
-    use_supcon = bool(config.get("supcon", {}).get("enabled", False))
 
-    for batch in loader:
-        if use_supcon:
-            left, right, labels = batch
-            labels = labels.to(device, non_blocking=device.type == "cuda")
-        else:
-            left, right = batch
-            labels = None
+    for left, right in loader:
         if left.size(0) < 2:
             continue
         left = left.to(device, non_blocking=device.type == "cuda")
         right = right.to(device, non_blocking=device.type == "cuda")
 
-        left_embedding, left_projection = model(left)
-        right_embedding, right_projection = model(right)
-        barlow_loss = barlow_twins_loss(left_projection, right_projection, float(config["barlow_lambda"]))
-        supcon_loss = torch.zeros((), dtype=barlow_loss.dtype, device=device)
-        if use_supcon and labels is not None:
-            supcon_loss = supervised_contrastive_loss(
-                left_embedding,
-                right_embedding,
-                labels,
-                float(config["supcon"]["temperature"]),
-            )
-        loss = barlow_loss + float(config["supcon"]["weight"]) * supcon_loss
+        _, left_projection = model(left)
+        _, right_projection = model(right)
+        loss, on_diag, off_diag = barlow_twins_loss(left_projection, right_projection, float(config["barlow_lambda"]))
 
         batch_size = left.size(0)
         total_loss += float(loss.item()) * batch_size
-        total_barlow += float(barlow_loss.item()) * batch_size
-        total_supcon += float(supcon_loss.item()) * batch_size
+        total_on_diag += float(on_diag.item()) * batch_size
+        total_off_diag += float(off_diag.item()) * batch_size
         total_items += batch_size
 
     if total_items == 0:
         raise ValueError("validation loader produced no batches with at least two items")
     return {
         "loss": total_loss / total_items,
-        "barlow": total_barlow / total_items,
-        "supcon": total_supcon / total_items,
+        "on_diag": total_on_diag / total_items,
+        "off_diag": total_off_diag / total_items,
     }
 
 
@@ -227,58 +189,9 @@ def clone_state_dict(model: BarlowTwinsModel) -> dict[str, torch.Tensor]:
     return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
 
 
-def save_checkpoint(
-    state_dict: dict[str, torch.Tensor],
-    output_path: Path,
-    embedding_dim: int,
-    policy: str,
-    dataset_name: str,
-    config: dict,
-    epoch: int,
-    train_metrics: dict[str, float],
-    validation_metrics: dict[str, float],
-    final_epoch: int,
-    final_train_metrics: dict[str, float],
-) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "state_dict": state_dict,
-        "embedding_dim": int(embedding_dim),
-        "augmentation": str(policy),
-        "source_name": source_name(embedding_dim, policy),
-        "dataset": dataset_name,
-        "epoch": int(epoch),
-        "best_epoch": int(epoch),
-        "selection_metric": "validation_barlow_loss",
-        "train_loss": float(train_metrics["loss"]),
-        "validation_loss": float(validation_metrics["loss"]),
-        "best_validation_loss": float(validation_metrics["barlow"]),
-        "best_validation_total_loss": float(validation_metrics["loss"]),
-        "train_barlow_loss": float(train_metrics["barlow"]),
-        "validation_barlow_loss": float(validation_metrics["barlow"]),
-        "train_supcon_loss": float(train_metrics["supcon"]),
-        "validation_supcon_loss": float(validation_metrics["supcon"]),
-        "final_epoch": int(final_epoch),
-        "final_train_loss": float(final_train_metrics["loss"]),
-        "final_train_barlow_loss": float(final_train_metrics["barlow"]),
-        "final_train_supcon_loss": float(final_train_metrics["supcon"]),
-        "supcon": dict(config["supcon"]),
-        "model": {
-            "base_channels": int(config["base_channels"]),
-            "dropout": float(config["dropout"]),
-            "projector_hidden_dim": int(config["projector_hidden_dim"]),
-            "projector_dim": int(config["projector_dim"]),
-        },
-        "augment": dict(config["augment"]),
-    }
-    torch.save(payload, output_path)
-    return output_path
-
-
 def train_one(data_dir: Path, output_dir: Path, embedding_dim: int, policy: str, config: dict, device: torch.device) -> Path:
-    use_supcon = bool(config.get("supcon", {}).get("enabled", False))
-    train_dataset = BarlowCropDataset(data_dir, "training", policy, config["augment"], paired=True, return_labels=use_supcon)
-    validation_dataset = BarlowCropDataset(data_dir, "validation", policy, config["augment"], paired=True, return_labels=use_supcon)
+    train_dataset = BarlowCropDataset(data_dir, "training", policy, config["augment"], paired=True)
+    validation_dataset = BarlowCropDataset(data_dir, "validation", policy, config["augment"], paired=True)
     train_loader = DataLoader(
         train_dataset,
         batch_size=int(config["batch_size"]),
@@ -310,50 +223,51 @@ def train_one(data_dir: Path, output_dir: Path, embedding_dim: int, policy: str,
         weight_decay=float(config["weight_decay"]),
     )
 
-    final_train_metrics = {"loss": 0.0, "barlow": 0.0, "supcon": 0.0}
-    best_train_metrics = {"loss": float("inf"), "barlow": float("inf"), "supcon": float("inf")}
-    best_validation_barlow = float("inf")
-    best_validation_metrics = {"loss": float("inf"), "barlow": float("inf"), "supcon": float("inf")}
-    best_epoch = 0
+    best_val_loss = float("inf")
     best_state = clone_state_dict(model)
+    best_epoch = 0
+    best_val_metrics: dict[str, float] = {}
 
     for epoch in range(1, int(config["epochs"]) + 1):
         train_metrics = train_epoch(model, train_loader, optimizer, device, config, policy)
-        validation_metrics = validation_epoch(model, validation_loader, device, config)
-        final_train_metrics = train_metrics
-        improved = validation_metrics["barlow"] < best_validation_barlow
-        if improved:
-            best_train_metrics = train_metrics
-            best_validation_barlow = validation_metrics["barlow"]
-            best_validation_metrics = validation_metrics
+        val_metrics = validation_epoch(model, validation_loader, device, config)
+
+        if val_metrics["loss"] < best_val_loss:
+            best_val_loss = val_metrics["loss"]
+            best_val_metrics = val_metrics
             best_epoch = epoch
             best_state = clone_state_dict(model)
 
         log(
             f"source={source_name(embedding_dim, policy)} epoch={epoch} "
-            f"train_loss={train_metrics['loss']:.6f} validation_loss={validation_metrics['loss']:.6f} "
-            f"train_barlow={train_metrics['barlow']:.6f} validation_barlow={validation_metrics['barlow']:.6f} "
-            f"train_supcon={train_metrics['supcon']:.6f} validation_supcon={validation_metrics['supcon']:.6f} "
-            f"best_validation_barlow={best_validation_barlow:.6f} best_epoch={best_epoch}"
+            f"train_loss={train_metrics['loss']:.6f} val_loss={val_metrics['loss']:.6f} "
+            f"on_diag={val_metrics['on_diag']:.4f} off_diag={val_metrics['off_diag']:.4f} "
+            f"best_val_loss={best_val_loss:.6f} best_epoch={best_epoch}"
         )
 
     output_path = checkpoint_path(output_dir, embedding_dim, policy, data_dir.name)
-    save_checkpoint(
-        best_state,
-        output_path,
-        embedding_dim,
-        policy,
-        data_dir.name,
-        config,
-        best_epoch,
-        best_train_metrics,
-        best_validation_metrics,
-        int(config["epochs"]),
-        final_train_metrics,
-    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({
+        "state_dict": best_state,
+        "embedding_dim": int(embedding_dim),
+        "augmentation": str(policy),
+        "source_name": source_name(embedding_dim, policy),
+        "dataset": data_dir.name,
+        "best_epoch": int(best_epoch),
+        "best_val_loss": float(best_val_loss),
+        "best_val_on_diag": float(best_val_metrics.get("on_diag", float("nan"))),
+        "best_val_off_diag": float(best_val_metrics.get("off_diag", float("nan"))),
+        "model": {
+            "base_channels": int(config["base_channels"]),
+            "dropout": float(config["dropout"]),
+            "projector_hidden_dim": int(config["projector_hidden_dim"]),
+            "projector_dim": int(config["projector_dim"]),
+        },
+        "augment": dict(config["augment"]),
+    }, output_path)
     report(
         f"checkpoint source={source_name(embedding_dim, policy)} best_epoch={best_epoch} "
-        f"best_validation_barlow={best_validation_barlow:.6f} path={output_path}"
+        f"best_val_loss={best_val_loss:.6f} path={output_path}"
     )
     return output_path
 

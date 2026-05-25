@@ -21,8 +21,6 @@
 # One parquet file is written per method, keyed internally by ratio_percent.
 #
 
-from __future__ import annotations
-
 import argparse
 import csv
 import math
