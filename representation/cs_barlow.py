@@ -23,11 +23,9 @@ from representation.audio import (
     CSVICRegDataset,
     barlow_twins_loss,
     crop_or_pad,
-    knn_neighbourhood_loss,
     load_manifest,
     resolve_relative_data_path,
 )
-from representation.topo_loss import topo_sig_loss
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "configs" / "cs_barlow.yaml"
@@ -37,7 +35,7 @@ DEFAULT_CONFIG: dict = {
     "seed": 17,
     "dataset": "fma_small_mel",
     "embedding_dims": [256],
-    "sensing_pairs": ["srht_srht", "srht_dct", "dct_dct"],
+    "sensing_pairs": ["srht_srht", "dct_dct"],
     "ratios": [1, 3, 7, 10],
     "base_channels": 32,
     "dropout": 0.0,
@@ -54,19 +52,6 @@ DEFAULT_CONFIG: dict = {
     "gl5_strip": 5,
     "gl5_grace": 20,
     "barlow_lambda": 0.05,
-    "topo_reg": {
-        "enabled": False,
-        "ph_mode": "raw",
-        "ph_cache_dir": "persistence/data",
-        "ref_dim": 0,
-        "lambda_knn": 0.01,
-        "knn_k": 10,
-        "knn_margin": 0.5,
-        "knn_tau": 0.1,
-        "lambda_topo": 0.0,
-        "topo_alpha_0": 1.0,
-        "topo_alpha_1": 0.1,
-    },
     "augment": {
         "crop_frames": 128,
         "time_mask_width": 0,
@@ -128,72 +113,23 @@ def cosine_lr(optimizer: torch.optim.Optimizer, epoch: int, epochs: int, warmup:
         pg["lr"] = lr
 
 
-def _reg_losses(
-    h1: torch.Tensor,
-    h2: torch.Tensor,
-    ref: torch.Tensor | None,
-    tr: dict,
-) -> tuple[torch.Tensor, float, float]:
-    if ref is None or not bool(tr.get("enabled", False)):
-        device = h1.device
-        zero = torch.tensor(0.0, device=device)
-        return zero, 0.0, 0.0
-
-    import torch.nn.functional as F
-    u = F.normalize(
-        (F.normalize(h1, dim=1) + F.normalize(h2, dim=1)) / 2.0, dim=1
-    )
-    r = ref.to(h1.device)
-
-    lam_knn = float(tr.get("lambda_knn", 0.01))
-    knn_val = knn_neighbourhood_loss(
-        u, r,
-        k=int(tr.get("knn_k", 10)),
-        margin=float(tr.get("knn_margin", 0.5)),
-        tau=float(tr.get("knn_tau", 0.1)),
-    )
-
-    lam_topo = float(tr.get("lambda_topo", 0.0))
-    if lam_topo > 0.0:
-        topo_val = topo_sig_loss(
-            u, r,
-            alpha_0=float(tr.get("topo_alpha_0", 1.0)),
-            alpha_1=float(tr.get("topo_alpha_1", 0.1)),
-        )
-    else:
-        topo_val = torch.tensor(0.0, device=h1.device)
-
-    reg = lam_knn * knn_val + lam_topo * topo_val
-    return reg, knn_val.item(), topo_val.item()
-
-
 def train_epoch(
     model: CSBarlowModel,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    config: dict,
+    lambd: float,
 ) -> dict[str, float]:
     model.train()
-    totals: dict[str, float] = {"loss": 0.0, "on_diag": 0.0, "off_diag": 0.0, "knn_loss": 0.0, "topo_loss": 0.0}
+    totals: dict[str, float] = {"loss": 0.0, "on_diag": 0.0, "off_diag": 0.0}
     n = 0
-    lambd = float(config["barlow_lambda"])
-    tr = config.get("topo_reg", {})
-    topo_enabled = bool(tr.get("enabled", False))
-    for batch in loader:
-        if topo_enabled:
-            v1, v2, ref = batch
-        else:
-            v1, v2 = batch
-            ref = None
+    for v1, v2 in loader:
         if v1.size(0) < 2:
             continue
         v1 = v1.to(device, non_blocking=True)
         v2 = v2.to(device, non_blocking=True)
-        h1, h2, z1, z2 = model(v1, v2)
+        _, _, z1, z2 = model(v1, v2)
         loss, on_diag, off_diag = barlow_twins_loss(z1, z2, lambd)
-        reg, knn_val, topo_val = _reg_losses(h1, h2, ref, tr)
-        loss = loss + reg
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -201,8 +137,6 @@ def train_epoch(
         totals["loss"] += loss.item() * bs
         totals["on_diag"] += on_diag.item() * bs
         totals["off_diag"] += off_diag.item() * bs
-        totals["knn_loss"] += knn_val * bs
-        totals["topo_loss"] += topo_val * bs
         n += bs
     denom = max(n, 1)
     return {k: v / denom for k, v in totals.items()}
@@ -213,34 +147,22 @@ def validation_epoch(
     model: CSBarlowModel,
     loader: DataLoader,
     device: torch.device,
-    config: dict,
+    lambd: float,
 ) -> dict[str, float]:
     model.eval()
-    totals: dict[str, float] = {"loss": 0.0, "on_diag": 0.0, "off_diag": 0.0, "knn_loss": 0.0, "topo_loss": 0.0}
+    totals: dict[str, float] = {"loss": 0.0, "on_diag": 0.0, "off_diag": 0.0}
     n = 0
-    lambd = float(config["barlow_lambda"])
-    tr = config.get("topo_reg", {})
-    topo_enabled = bool(tr.get("enabled", False))
-    for batch in loader:
-        if topo_enabled:
-            v1, v2, ref = batch
-        else:
-            v1, v2 = batch
-            ref = None
+    for v1, v2 in loader:
         if v1.size(0) < 2:
             continue
         v1 = v1.to(device, non_blocking=True)
         v2 = v2.to(device, non_blocking=True)
-        h1, h2, z1, z2 = model(v1, v2)
+        _, _, z1, z2 = model(v1, v2)
         loss, on_diag, off_diag = barlow_twins_loss(z1, z2, lambd)
-        reg, knn_val, topo_val = _reg_losses(h1, h2, ref, tr)
-        loss = loss + reg
         bs = v1.size(0)
         totals["loss"] += loss.item() * bs
         totals["on_diag"] += on_diag.item() * bs
         totals["off_diag"] += off_diag.item() * bs
-        totals["knn_loss"] += knn_val * bs
-        totals["topo_loss"] += topo_val * bs
         n += bs
     if n == 0:
         raise ValueError("validation loader produced no valid batches")
@@ -249,74 +171,6 @@ def validation_epoch(
 
 def clone_state(model: CSBarlowModel) -> dict[str, torch.Tensor]:
     return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-
-
-def _build_ref_coords(
-    data_dir: Path,
-    config: dict,
-) -> tuple[dict | None, dict | None]:
-    tr = config.get("topo_reg", {})
-    if not bool(tr.get("enabled", False)):
-        return None, None
-
-    ph_mode = str(tr.get("ph_mode", "raw"))
-    cache_dir = Path(str(tr.get("ph_cache_dir", "persistence/data"))).expanduser().resolve()
-
-    if ph_mode == "umap16":
-        from persistence.ph_cache import MelPHCache
-        ref_train: dict[str, np.ndarray] = {}
-        ref_val: dict[str, np.ndarray] = {}
-        for split, out in (("training", ref_train), ("validation", ref_val)):
-            cache = MelPHCache.from_config(cache_dir, "umap16", split)
-            for tid in cache.track_ids():
-                coords = cache[tid, 0]
-                if coords.ndim == 2 and coords.shape[0] > 0:
-                    out[tid] = coords[0].astype(np.float32)
-                else:
-                    out[tid] = np.zeros(16, dtype=np.float32)
-        return ref_train, ref_val
-
-    ref_dim = int(tr.get("ref_dim", 0))
-
-    def _load_flat_mel(split: str) -> dict[str, np.ndarray]:
-        from representation.audio import load_manifest, resolve_relative_data_path, crop_or_pad
-        manifest = load_manifest(data_dir, split)
-        crop_frames = int(config["augment"]["crop_frames"])
-        coords: dict[str, np.ndarray] = {}
-        for _, row in manifest.iterrows():
-            tid = str(row["track_id"])
-            mel_path = resolve_relative_data_path(data_dir, str(row["mel_path"]))
-            try:
-                mel = torch.load(mel_path, map_location="cpu", weights_only=True).float()
-                if mel.ndim != 2:
-                    continue
-                mel = crop_or_pad(mel, crop_frames, random_crop=False)
-                flat = mel.numpy().ravel().astype(np.float32)
-                flat = flat - flat.mean()
-                coords[tid] = flat
-            except Exception:
-                continue
-        return coords
-
-    ref_train = _load_flat_mel("training")
-    ref_val = _load_flat_mel("validation")
-
-    if ref_dim > 0 and ref_train:
-        from sklearn.decomposition import PCA
-        keys_tr = list(ref_train.keys())
-        X = np.stack([ref_train[k] for k in keys_tr], axis=0)
-        pca = PCA(n_components=min(ref_dim, X.shape[0], X.shape[1]), whiten=True)
-        X_tr = pca.fit_transform(X).astype(np.float32)
-        for i, k in enumerate(keys_tr):
-            ref_train[k] = X_tr[i]
-        if ref_val:
-            keys_val = list(ref_val.keys())
-            X_val = np.stack([ref_val[k] for k in keys_val], axis=0)
-            X_val_t = pca.transform(X_val).astype(np.float32)
-            for i, k in enumerate(keys_val):
-                ref_val[k] = X_val_t[i]
-
-    return ref_train, ref_val
 
 
 def train_one(
@@ -330,10 +184,10 @@ def train_one(
 ) -> Path:
     source = get_source_name(embedding_dim, sensing_pair, ratio)
     dataset_name = str(config.get("dataset", data_dir.name))
+    lambd = float(config["barlow_lambda"])
 
-    ref_coords_train, ref_coords_val = _build_ref_coords(data_dir, config)
-    train_ds = CSVICRegDataset(data_dir, "training", sensing_pair, ratio, config["augment"], ref_coords=ref_coords_train)
-    val_ds = CSVICRegDataset(data_dir, "validation", sensing_pair, ratio, config["augment"], ref_coords=ref_coords_val)
+    train_ds = CSVICRegDataset(data_dir, "training", sensing_pair, ratio, config["augment"])
+    val_ds = CSVICRegDataset(data_dir, "validation", sensing_pair, ratio, config["augment"])
 
     nw = int(config["num_workers"])
     bs = int(config["batch_size"])
@@ -376,8 +230,8 @@ def train_one(
 
     for epoch in range(epochs):
         cosine_lr(optimizer, epoch, epochs, warmup, base_lr)
-        train_m = train_epoch(model, train_loader, optimizer, device, config)
-        val_m = validation_epoch(model, val_loader, device, config)
+        train_m = train_epoch(model, train_loader, optimizer, device, lambd)
+        val_m = validation_epoch(model, val_loader, device, lambd)
 
         vl = val_m["loss"]
         val_loss_history.append(vl)
@@ -394,8 +248,6 @@ def train_one(
             "val_loss": vl,
             "val_on_diag": val_m["on_diag"],
             "val_off_diag": val_m["off_diag"],
-            "val_knn_loss": val_m["knn_loss"],
-            "val_topo_loss": val_m["topo_loss"],
         })
 
         gl2 = 100.0 * (vl / best_val_loss - 1.0)
@@ -409,14 +261,11 @@ def train_one(
         else:
             gl2_str = f" GL2={gl2:.2f}"
 
-        reg_str = ""
-        if bool(config.get("topo_reg", {}).get("enabled", False)):
-            reg_str = f" knn={val_m['knn_loss']:.4f} topo={val_m['topo_loss']:.4f}"
         log(
             f"source={source} epoch={epoch+1}/{epochs} "
             f"train_loss={train_m['loss']:.6f} val_loss={vl:.6f} "
             f"on_diag={val_m['on_diag']:.4f} off_diag={val_m['off_diag']:.4f}"
-            f"{reg_str}{gl2_str}"
+            f"{gl2_str}"
         )
 
         if (epoch + 1 > gl5_grace
