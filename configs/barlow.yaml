@@ -1,9 +1,10 @@
 device: auto
 seed: 17
+use_low_rank: false
 embedding_dims: [256]
 augmentations: [a0, a1, a2, a3, a4]
 batch_size: 128
-num_workers: 4
+num_workers: 8
 epochs: 200
 learning_rate: 0.0003
 weight_decay: 0.0001
@@ -12,6 +13,12 @@ dropout: 0.0
 projector_hidden_dim: 1024
 projector_dim: 1024
 barlow_lambda: 0.005
+gl2_strip: 5
+gl5_threshold: 2.0
+gl5_strip: 5
+gl5_grace: 20
+up_k_min: 5.0
+up_k_strip: 10
 augment:
   crop_frames: 256
   resize_scale: [0.85, 1.0]

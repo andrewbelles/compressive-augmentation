@@ -20,11 +20,20 @@ from torch.utils.data import Dataset
 AUGMENTATION_POLICIES = ("a0", "a1", "a2", "a3", "a4")
 
 
-def resolve_relative_data_path(base_dir: Path, manifest_path: str) -> Path:
+def resolve_relative_data_path(base_dir: Path, manifest_path: str, use_low_rank: bool = False) -> Path:
     relative_path = Path(str(manifest_path))
     if relative_path.parts and relative_path.parts[0] == base_dir.name:
         relative_path = Path(*relative_path.parts[1:])
-    return base_dir / relative_path
+    full_path = base_dir / relative_path
+    if use_low_rank:
+        lr_path = full_path.with_suffix(".lr.pt")
+        if not lr_path.exists():
+            raise FileNotFoundError(
+                f"low-rank file not found: {lr_path}  "
+                f"(run: python -m preprocess.rpca -d {base_dir})"
+            )
+        return lr_path
+    return full_path
 
 
 def load_manifest(data_dir: Path, split: str) -> pd.DataFrame:
@@ -111,20 +120,21 @@ def mixup_batch(left: torch.Tensor, right: torch.Tensor, alpha: float) -> tuple[
 
 
 class BarlowCropDataset(Dataset):
-    def __init__(self, data_dir: Path, split: str, policy: str, augment_config: dict, paired: bool):
+    def __init__(self, data_dir: Path, split: str, policy: str, augment_config: dict, paired: bool, use_low_rank: bool = False):
         self.data_dir = data_dir.resolve()
-        self.root_dir = self.data_dir.parent
-        self.frame = load_manifest(self.data_dir, split)
+        frame = load_manifest(self.data_dir, split)
+        self.mel_paths = [
+            resolve_relative_data_path(self.data_dir, str(r), use_low_rank) for r in frame["mel_path"]
+        ]
         self.policy = str(policy)
         self.augment_config = augment_config
         self.paired = bool(paired)
 
     def __len__(self) -> int:
-        return len(self.frame)
+        return len(self.mel_paths)
 
     def __getitem__(self, index: int):
-        row = self.frame.iloc[index].to_dict()
-        mel_path = resolve_relative_data_path(self.data_dir, str(row["mel_path"]))
+        mel_path = self.mel_paths[index]
         mel = torch.load(mel_path, map_location="cpu", weights_only=True).float()
         if mel.ndim != 2:
             raise ValueError(f"expected 2D mel tensor at {mel_path}, got {tuple(mel.shape)}")
@@ -132,10 +142,10 @@ class BarlowCropDataset(Dataset):
         if self.paired:
             left = apply_policy(mel, self.policy, self.augment_config)
             right = left.clone() if self.policy == "a0" else apply_policy(mel, self.policy, self.augment_config)
-            return left.unsqueeze(0).contiguous(), right.unsqueeze(0).contiguous()
+            return left.unsqueeze(0), right.unsqueeze(0)
 
         crop = crop_or_pad(mel, int(self.augment_config["crop_frames"]), random_crop=False)
-        return crop.unsqueeze(0).contiguous(), row
+        return crop.unsqueeze(0), {}
 
 
 def collate_embedding_batch(batch):
@@ -255,49 +265,40 @@ class CSEncoder(nn.Module):
         return self.head(self.dropout(pooled))
 
 
-def _next_power_of_two(n: int) -> int:
-    return 1 << (n - 1).bit_length()
+
+def _dct_ortho(x: torch.Tensor) -> torch.Tensor:
+    d = x.shape[0]
+    v = torch.cat([x, x.flip(0)]).double()
+    V = torch.fft.rfft(v, n=2 * d)
+    k = torch.arange(d, dtype=torch.float64, device=x.device)
+    phase = torch.exp(-1j * math.pi * k / (2.0 * d))
+    coeffs = (V[:d] * phase).real
+    coeffs[0] /= math.sqrt(4.0 * d)
+    coeffs[1:] /= math.sqrt(2.0 * d)
+    return coeffs.float()
 
 
-def _fwht_inplace(x: torch.Tensor) -> torch.Tensor:
-    n = x.shape[0]
-    h = 1
-    while h < n:
-        x = x.reshape(-1, h * 2)
-        x = torch.cat([x[:, :h] + x[:, h:], x[:, :h] - x[:, h:]], dim=1)
-        x = x.reshape(n)
-        h *= 2
-    return x
-
-
-def srht_backproject(x_flat: torch.Tensor, m: int) -> torch.Tensor:
-    d = x_flat.shape[0]
-    d2 = _next_power_of_two(d)
-    xp = F.pad(x_flat, (0, d2 - d))
-    signs = torch.randint(0, 2, (d2,), device=x_flat.device, dtype=x_flat.dtype) * 2 - 1
-    xp = xp * signs
-    xp = _fwht_inplace(xp) / math.sqrt(d2)
-    m = min(m, d2)
-    rows = torch.randperm(d2, device=x_flat.device)[:m]
-    y = xp[rows]
-    z = torch.zeros(d2, device=x_flat.device, dtype=x_flat.dtype)
-    z[rows] = y
-    x_hat = _fwht_inplace(z) / math.sqrt(d2) * signs
-    return x_hat[:d]
+def _idct_ortho(c: torch.Tensor) -> torch.Tensor:
+    d = c.shape[0]
+    c2 = c.double().clone()
+    c2[0] *= math.sqrt(4.0 * d)
+    c2[1:] *= math.sqrt(2.0 * d)
+    k = torch.arange(d, dtype=torch.float64, device=c.device)
+    phase = torch.exp(1j * math.pi * k / (2.0 * d))
+    V_half = (c2 * phase).to(torch.complex128)
+    V_full = torch.cat([V_half, torch.zeros(1, dtype=torch.complex128, device=c.device), V_half[1:].flip(0).conj()])
+    return torch.fft.ifft(V_full).real[:d].float()
 
 
 def dct_backproject(x_flat: torch.Tensor, m: int) -> torch.Tensor:
     d = x_flat.shape[0]
-    x_np = x_flat.cpu().numpy().astype(np.float64)
-    from scipy.fft import dct, idct
-    coeffs = dct(x_np, norm="ortho")
-    probs = 1.0 / (np.arange(1, d + 1) ** 0.5)
-    probs /= probs.sum()
-    idx = np.random.choice(d, size=min(m, d), replace=False, p=probs)
-    z = np.zeros(d, dtype=np.float64)
+    coeffs = _dct_ortho(x_flat)
+    probs = 1.0 / torch.arange(1, d + 1, dtype=torch.float64, device=x_flat.device).sqrt()
+    probs = (probs / probs.sum()).float()
+    idx = torch.multinomial(probs, num_samples=min(m, d), replacement=False)
+    z = torch.zeros(d, dtype=torch.float32, device=x_flat.device)
     z[idx] = coeffs[idx]
-    x_hat = idct(z, norm="ortho").astype(np.float32)
-    return torch.from_numpy(x_hat).to(x_flat.device)
+    return _idct_ortho(z)
 
 
 def gaussian_backproject(x_flat: torch.Tensor, m: int) -> torch.Tensor:
@@ -308,9 +309,20 @@ def gaussian_backproject(x_flat: torch.Tensor, m: int) -> torch.Tensor:
     return Phi.t() @ y
 
 
+def parse_sensing_pair(sensing_pair: str) -> tuple[str, str]:
+    known = {"dct", "gaussian"}
+    parts = sensing_pair.split("_")
+    left_name = parts[0]
+    right_name = "_".join(parts[1:]) if len(parts) > 1 else parts[0]
+    if left_name not in known or right_name not in known:
+        raise ValueError(f"unsupported sensing_pair: {sensing_pair!r}")
+    return left_name, right_name
+
+
 def cs_view_pair(
     mel: torch.Tensor,
-    sensing_pair: str,
+    left_name: str,
+    right_name: str,
     ratio: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     c, f, t = mel.shape
@@ -318,16 +330,7 @@ def cs_view_pair(
     d = x_flat.shape[0]
     m = max(1, int(round(d * ratio / 100.0)))
 
-    known = {"srht", "dct", "gaussian"}
-    parts = sensing_pair.split("_")
-    left_name = parts[0]
-    right_name = "_".join(parts[1:]) if len(parts) > 1 else parts[0]
-    if left_name not in known or right_name not in known:
-        raise ValueError(f"unsupported sensing_pair: {sensing_pair!r}")
-
     def apply(name: str) -> torch.Tensor:
-        if name == "srht":
-            return srht_backproject(x_flat, m)
         if name == "dct":
             return dct_backproject(x_flat, m)
         if name == "gaussian":
@@ -353,42 +356,45 @@ class HybridBarlowDataset(Dataset):
         ratio: int,
         cs_prob: float = 1.0,
         symmetric: bool = False,
+        use_low_rank: bool = False,
     ) -> None:
         self.data_dir = data_dir.resolve()
-        self.frame = load_manifest(self.data_dir, split)
+        frame = load_manifest(self.data_dir, split)
+        self.mel_paths = [
+            resolve_relative_data_path(self.data_dir, str(r), use_low_rank) for r in frame["mel_path"]
+        ]
         self.policy_strong = str(policy_strong)
         idx = _POLICY_LADDER.index(self.policy_strong)
         self.policy_weak = _POLICY_LADDER[max(0, idx - 1)]
         self.augment_config = augment_config
-        self.sensing_pair = sensing_pair
+        self.left_name, self.right_name = parse_sensing_pair(sensing_pair)
         self.ratio = ratio
         self.cs_prob = float(cs_prob)
         self.symmetric = bool(symmetric)
 
     def __len__(self) -> int:
-        return len(self.frame)
+        return len(self.mel_paths)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        row = self.frame.iloc[index].to_dict()
-        mel_path = resolve_relative_data_path(self.data_dir, str(row["mel_path"]))
+        mel_path = self.mel_paths[index]
         mel = torch.load(mel_path, map_location="cpu", weights_only=True).float()
         if mel.ndim != 2:
             raise ValueError(f"expected 2D mel tensor at {mel_path}")
 
         if self.symmetric:
-            aug1 = apply_policy(mel, self.policy_strong, self.augment_config).unsqueeze(0).contiguous()
-            aug2 = apply_policy(mel, self.policy_strong, self.augment_config).unsqueeze(0).contiguous()
-            v1, _ = cs_view_pair(aug1, self.sensing_pair, self.ratio)
-            v2, _ = cs_view_pair(aug2, self.sensing_pair, self.ratio)
-            return v1, v2.contiguous()
+            aug1 = apply_policy(mel, self.policy_strong, self.augment_config).unsqueeze(0)
+            aug2 = apply_policy(mel, self.policy_strong, self.augment_config).unsqueeze(0)
+            v1, _ = cs_view_pair(aug1, self.left_name, self.right_name, self.ratio)
+            v2, _ = cs_view_pair(aug2, self.left_name, self.right_name, self.ratio)
+            return v1, v2
 
-        v2 = apply_policy(mel, self.policy_weak, self.augment_config).unsqueeze(0).contiguous()
-        aug = apply_policy(mel, self.policy_strong, self.augment_config).unsqueeze(0).contiguous()
+        v2 = apply_policy(mel, self.policy_weak, self.augment_config).unsqueeze(0)
+        aug = apply_policy(mel, self.policy_strong, self.augment_config).unsqueeze(0)
         if self.cs_prob >= 1.0 or random.random() < self.cs_prob:
-            v1, _ = cs_view_pair(aug, self.sensing_pair, self.ratio)
+            v1, _ = cs_view_pair(aug, self.left_name, self.right_name, self.ratio)
         else:
             v1 = aug
-        return v1, v2.contiguous()
+        return v1, v2
 
 
 class CSVICRegDataset(Dataset):
@@ -400,40 +406,37 @@ class CSVICRegDataset(Dataset):
         ratio: int,
         augment_config: dict,
         ref_coords: dict[str, np.ndarray] | None = None,
+        use_low_rank: bool = False,
     ) -> None:
         self.data_dir = data_dir.resolve()
-        self.frame = load_manifest(self.data_dir, split)
-        self.sensing_pair = sensing_pair
+        frame = load_manifest(self.data_dir, split)
+        self.mel_paths = [
+            resolve_relative_data_path(self.data_dir, str(r), use_low_rank) for r in frame["mel_path"]
+        ]
+        self.left_name, self.right_name = parse_sensing_pair(sensing_pair)
         self.ratio = ratio
         self.augment_config = augment_config
         self.crop_frames = int(augment_config["crop_frames"])
+        self.time_w = int(augment_config.get("time_mask_width", 0))
+        self.freq_w = int(augment_config.get("freq_mask_width", 0))
         self.ref_coords = ref_coords
 
     def __len__(self) -> int:
-        return len(self.frame)
+        return len(self.mel_paths)
 
     def __getitem__(self, index: int):
-        row = self.frame.iloc[index].to_dict()
-        mel_path = resolve_relative_data_path(self.data_dir, str(row["mel_path"]))
+        mel_path = self.mel_paths[index]
         mel = torch.load(mel_path, map_location="cpu", weights_only=True).float()
         if mel.ndim != 2:
             raise ValueError(f"expected 2D mel tensor at {mel_path}")
 
         mel = crop_or_pad(mel, self.crop_frames, random_crop=True)
-        time_w = int(self.augment_config.get("time_mask_width", 0))
-        freq_w = int(self.augment_config.get("freq_mask_width", 0))
-        if time_w > 0 or freq_w > 0:
-            mel = time_frequency_mask(mel, time_w, freq_w)
+        if self.time_w > 0 or self.freq_w > 0:
+            mel = time_frequency_mask(mel, self.time_w, self.freq_w)
 
-        mel_t = mel.unsqueeze(0).contiguous()
-        v1, v2 = cs_view_pair(mel_t, self.sensing_pair, self.ratio)
-
-        if self.ref_coords is not None:
-            track_id = str(row["track_id"])
-            ref = torch.from_numpy(self.ref_coords[track_id].copy())
-            return v1.contiguous(), v2.contiguous(), ref
-
-        return v1.contiguous(), v2.contiguous()
+        mel_t = mel.unsqueeze(0)
+        v1, v2 = cs_view_pair(mel_t, self.left_name, self.right_name, self.ratio)
+        return v1, v2
 
 
 class CSBarlowModel(nn.Module):

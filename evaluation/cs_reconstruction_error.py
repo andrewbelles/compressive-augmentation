@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("-o", "--output", type=Path, default=DEFAULT_OUT)
     p.add_argument("--method", type=str, default=None,
-                   help="Override config method: dct | srht | gaussian")
+                   help="Override config method: dct | gaussian")
     return p.parse_args()
 
 
@@ -66,33 +66,6 @@ def dct_backproject(x_flat: np.ndarray, m: int) -> np.ndarray:
     return idct(z, norm="ortho").astype(np.float32)
 
 
-def srht_backproject(x_flat: np.ndarray, m: int) -> np.ndarray:
-    d = len(x_flat)
-    d2 = 1 << (d - 1).bit_length()
-    xp = np.zeros(d2, dtype=np.float64)
-    xp[:d] = x_flat.astype(np.float64)
-    signs = np.random.choice([-1.0, 1.0], size=d2)
-    xp *= signs
-
-    def fwht(a: np.ndarray) -> np.ndarray:
-        h = 1
-        while h < len(a):
-            a = a.reshape(-1, h * 2)
-            u, v = a[:, :h].copy(), a[:, h:].copy()
-            a[:, :h] = u + v
-            a[:, h:] = u - v
-            a = a.ravel()
-            h *= 2
-        return a
-
-    xp = fwht(xp) / math.sqrt(d2)
-    m = min(m, d2)
-    rows = np.random.choice(d2, size=m, replace=False)
-    z = np.zeros(d2, dtype=np.float64)
-    z[rows] = xp[rows]
-    x_hat = fwht(z) / math.sqrt(d2) * signs
-    return x_hat[:d].astype(np.float32)
-
 
 def gaussian_backproject(x_flat: np.ndarray, m: int) -> np.ndarray:
     d = len(x_flat)
@@ -102,7 +75,7 @@ def gaussian_backproject(x_flat: np.ndarray, m: int) -> np.ndarray:
     return (Phi.T @ y).astype(np.float32)
 
 
-METHODS = {"dct": dct_backproject, "srht": srht_backproject, "gaussian": gaussian_backproject}
+METHODS = {"dct": dct_backproject, "gaussian": gaussian_backproject}
 
 
 def psnr(original: np.ndarray, reconstructed: np.ndarray) -> float:

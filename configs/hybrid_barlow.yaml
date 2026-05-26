@@ -1,12 +1,13 @@
 device: auto
 seed: 17
+use_low_rank: false
 dataset: fma_small_mel
 
 sensing_pair: dct_dct
 
-augmentations: [a2, a3]
-ratios: [20, 30, 40, 50]
-projection_dims: [1024]
+augmentations: [a1]
+ratios: [80, 90]
+projection_dims: [256]
 embedding_dims: [256]
 cs_prob: 1.0
 symmetric: false
@@ -14,8 +15,8 @@ symmetric: false
 base_channels: 32
 dropout: 0.0
 projection_hidden_dim: 1024
-batch_size: 128
-num_workers: 4
+batch_size: 256
+num_workers: 8
 epochs: 300
 learning_rate: 1.0e-4
 weight_decay: 1.0e-4
@@ -24,6 +25,8 @@ gl2_strip: 5
 gl5_threshold: 3.0
 gl5_strip: 5
 gl5_grace: 50
+up_k_min: 5.0
+up_k_strip: 10
 barlow_lambda: 0.005
 
 augment:

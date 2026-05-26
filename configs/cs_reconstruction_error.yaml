@@ -1,4 +1,4 @@
-method: dct          # sensing method: dct | srht | gaussian
+method: dct          # sensing method: dct | gaussian
 n_samples: 200
 crop_frames: 256
 seed: 0

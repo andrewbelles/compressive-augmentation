@@ -29,14 +29,6 @@ from representation.audio import (
     load_manifest,
     resolve_relative_data_path,
 )
-from evaluation.linear import (
-    build_estimator,
-    build_features,
-    compute_metrics,
-    encode_labels,
-    optimize_hyperparameters,
-    split_frames_from_group,
-)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "configs" / "hybrid_barlow.yaml"
@@ -63,6 +55,8 @@ DEFAULT_CONFIG: dict = {
     "gl5_threshold": 2.0,
     "gl5_strip": 5,
     "gl5_grace": 20,
+    "up_k_min": 5.0,
+    "up_k_strip": 10,
     "cs_prob": 1.0,
     "symmetric": False,
     "barlow_lambda": 0.05,
@@ -138,23 +132,27 @@ def train_epoch(
     model: BarlowTwinsModel,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
     device: torch.device,
     lambd: float,
 ) -> dict[str, float]:
     model.train()
     totals: dict[str, float] = {"loss": 0.0, "on_diag": 0.0, "off_diag": 0.0}
     n = 0
+    use_amp = device.type == "cuda"
     for v1, v2 in loader:
         if v1.size(0) < 2:
             continue
         v1 = v1.to(device, non_blocking=True)
         v2 = v2.to(device, non_blocking=True)
-        _, z1 = model(v1)
-        _, z2 = model(v2)
-        loss, on_diag, off_diag = barlow_twins_loss(z1, z2, lambd)
+        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
+            _, z1 = model(v1)
+            _, z2 = model(v2)
+            loss, on_diag, off_diag = barlow_twins_loss(z1, z2, lambd)
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         bs = v1.size(0)
         totals["loss"] += loss.item() * bs
         totals["on_diag"] += on_diag.item() * bs
@@ -174,14 +172,16 @@ def validation_epoch(
     model.eval()
     totals: dict[str, float] = {"loss": 0.0, "on_diag": 0.0, "off_diag": 0.0}
     n = 0
+    use_amp = device.type == "cuda"
     for v1, v2 in loader:
         if v1.size(0) < 2:
             continue
         v1 = v1.to(device, non_blocking=True)
         v2 = v2.to(device, non_blocking=True)
-        _, z1 = model(v1)
-        _, z2 = model(v2)
-        loss, on_diag, off_diag = barlow_twins_loss(z1, z2, lambd)
+        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
+            _, z1 = model(v1)
+            _, z2 = model(v2)
+            loss, on_diag, off_diag = barlow_twins_loss(z1, z2, lambd)
         bs = v1.size(0)
         totals["loss"] += loss.item() * bs
         totals["on_diag"] += on_diag.item() * bs
@@ -193,7 +193,8 @@ def validation_epoch(
 
 
 def clone_state(model: BarlowTwinsModel) -> dict[str, torch.Tensor]:
-    return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    src = getattr(model, "_orig_mod", model)
+    return {k: v.detach().cpu().clone() for k, v in src.state_dict().items()}
 
 
 @torch.no_grad()
@@ -266,17 +267,18 @@ def train_one(
     source = get_source_name(aug, sensing_pair, ratio, proj_dim, embedding_dim, cs_prob, symmetric)
     dataset_name = str(config.get("dataset", data_dir.name))
 
-    train_ds = HybridBarlowDataset(data_dir, "training", aug, config["augment"], sensing_pair, ratio, cs_prob=cs_prob, symmetric=symmetric)
-    val_ds = HybridBarlowDataset(data_dir, "validation", aug, config["augment"], sensing_pair, ratio, cs_prob=cs_prob, symmetric=symmetric)
+    use_lr = bool(config.get("use_low_rank", False))
+    train_ds = HybridBarlowDataset(data_dir, "training", aug, config["augment"], sensing_pair, ratio, cs_prob=cs_prob, symmetric=symmetric, use_low_rank=use_lr)
+    val_ds = HybridBarlowDataset(data_dir, "validation", aug, config["augment"], sensing_pair, ratio, cs_prob=cs_prob, symmetric=symmetric, use_low_rank=use_lr)
 
     nw = int(config["num_workers"])
     bs = int(config["batch_size"])
     train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=nw,
                               pin_memory=device.type == "cuda", drop_last=True,
-                              persistent_workers=nw > 0)
+                              persistent_workers=nw > 0, prefetch_factor=4 if nw > 0 else None)
     val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=nw,
                             pin_memory=device.type == "cuda", drop_last=False,
-                            persistent_workers=nw > 0)
+                            persistent_workers=nw > 0, prefetch_factor=4 if nw > 0 else None)
 
     model = BarlowTwinsModel(
         embedding_dim=embedding_dim,
@@ -285,12 +287,14 @@ def train_one(
         projector_hidden_dim=int(config["projection_hidden_dim"]),
         projector_dim=proj_dim,
     ).to(device)
+    model = torch.compile(model)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(config["learning_rate"]),
         weight_decay=float(config["weight_decay"]),
     )
+    scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
 
     epochs = int(config["epochs"])
     warmup = int(config["warmup_epochs"])
@@ -300,6 +304,8 @@ def train_one(
     gl5_threshold = float(config["gl5_threshold"])
     gl5_strip = int(config["gl5_strip"])
     gl5_grace = int(config["gl5_grace"])
+    up_k_min = float(config["up_k_min"])
+    up_k_strip = int(config["up_k_strip"])
 
     best_val_loss = float("inf")
     best_state: dict = {}
@@ -307,11 +313,12 @@ def train_one(
     best_val_metrics: dict[str, float] = {}
     val_loss_history: list[float] = []
     gl2_history: list[float] = []
+    p_k_history: list[float] = []
     epoch_history: list[dict] = []
 
     for epoch in range(epochs):
         cosine_lr(optimizer, epoch, epochs, warmup, base_lr)
-        train_m = train_epoch(model, train_loader, optimizer, device, lambd)
+        train_m = train_epoch(model, train_loader, optimizer, scaler, device, lambd)
         val_m = validation_epoch(model, val_loader, device, lambd)
 
         vl = val_m["loss"]
@@ -335,13 +342,15 @@ def train_one(
         gl2 = 100.0 * (vl / best_val_loss - 1.0)
         gl2_history.append(gl2)
 
+        p_k = float("nan")
         if len(val_loss_history) >= gl2_strip:
             strip = val_loss_history[-gl2_strip:]
             strip_min = min(strip)
             p_k = max(1000.0 * (sum(strip) / (gl2_strip * strip_min) - 1.0), 1e-8)
-            gl2_str = f" GL2={gl2:.2f} P_k={p_k:.2f}"
+            gl2_str = f" sGLt={gl2:.2f} P_k={p_k:.2f}"
         else:
-            gl2_str = f" GL2={gl2:.2f}"
+            gl2_str = f" sGLt={gl2:.2f}"
+        p_k_history.append(p_k)
 
         log(
             f"source={source} epoch={epoch+1}/{epochs} "
@@ -350,11 +359,16 @@ def train_one(
             f"{gl2_str}"
         )
 
-        if (epoch + 1 > gl5_grace
-                and len(gl2_history) >= gl5_strip
-                and all(g > gl5_threshold for g in gl2_history[-gl5_strip:])):
-            log(f"source={source} early_stop=GL5 epoch={epoch+1} GL2={gl2:.2f} threshold={gl5_threshold}")
-            break
+        if epoch + 1 > gl5_grace:
+            if (len(gl2_history) >= gl5_strip
+                    and all(g > gl5_threshold for g in gl2_history[-gl5_strip:])):
+                log(f"source={source} early_stop=sGLt epoch={epoch+1} sGLt={gl2:.2f} threshold={gl5_threshold}")
+                break
+            finite_pk = [p for p in p_k_history[-up_k_strip:] if p == p]
+            if (len(finite_pk) >= up_k_strip
+                    and all(p < up_k_min for p in finite_pk)):
+                log(f"source={source} early_stop=UP_k epoch={epoch+1} P_k={p_k:.2f}")
+                break
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = checkpoint_dir / f"{source}_{dataset_name}.pt"
@@ -416,7 +430,7 @@ def extract_embeddings(
     augment_cfg = dict(payload["augment"])
     crop_frames = int(augment_cfg["crop_frames"])
 
-    written: list[Path] = []
+    all_frames: list[pd.DataFrame] = []
     for split in SPLITS:
         manifest = load_manifest(data_dir, split)
 
@@ -424,8 +438,9 @@ def extract_embeddings(
         track_ids: list = []
         genre_tops: list = []
 
+        use_lr = bool(config.get("use_low_rank", False))
         for _, row in manifest.iterrows():
-            mel_path = resolve_relative_data_path(data_dir, str(row["mel_path"]))
+            mel_path = resolve_relative_data_path(data_dir, str(row["mel_path"]), use_lr)
             mel = torch.load(mel_path, map_location="cpu", weights_only=True).float()
             if mel.ndim != 2:
                 continue
@@ -455,37 +470,19 @@ def extract_embeddings(
         out_frame["cs_prob"] = cs_prob
         out_frame["seed"] = int(config.get("seed", 0))
         out_frame["dataset"] = dataset_name
+        all_frames.append(out_frame)
+        report(f"extracted source={source} split={split} n={len(Z)}")
 
-        output_dir.mkdir(parents=True, exist_ok=True)
-        out_path = output_dir / f"{source}_{dataset_name}_{split}.parquet"
-        out_frame.to_parquet(out_path, index=False)
-        written.append(out_path)
-        report(f"extracted source={source} split={split} n={len(Z)} path={out_path}")
-
-    return written
-
-
-def _probe_val_f1(parquet_paths: list[Path], probe_config: dict) -> float:
-    frames = [pd.read_parquet(p) for p in parquet_paths]
-    group = pd.concat(frames, ignore_index=True)
-    split_frames, columns = split_frames_from_group(group)
-    features = build_features(split_frames, columns)
-    _, labels = encode_labels(split_frames)
-    best_params, best_val_score = optimize_hyperparameters(
-        "logistic", probe_config,
-        features["training"], labels["training"],
-        features["validation"], labels["validation"],
-    )
-    estimator = build_estimator(
-        "logistic", float(best_params["C"]),
-        max_iter=int(probe_config["max_iter"]),
-        tol=float(probe_config["tol"]),
-        config=probe_config,
-    )
-    estimator.fit(features["training"], labels["training"])
-    n_classes = len(np.unique(labels["training"]))
-    val_metrics = compute_metrics(estimator, features["validation"], labels["validation"], n_classes=n_classes)
-    return float(val_metrics["f1_macro"])
+    if not all_frames:
+        return []
+    out_path = output_dir / f"hybrid_barlow_{dataset_name}.parquet"
+    existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame()
+    combined = pd.concat([existing, *all_frames], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["method", "split", "track_id"], keep="last")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    combined.to_parquet(out_path, index=False)
+    report(f"wrote path={out_path} total_rows={len(combined)}")
+    return [out_path]
 
 
 def main() -> int:
@@ -505,28 +502,14 @@ def main() -> int:
     ratios = [int(r) for r in config["ratios"]]
     projection_dims = [int(p) for p in config["projection_dims"]]
     embedding_dims = [int(d) for d in config["embedding_dims"]]
-
     dataset_name = str(config.get("dataset", data_dir.name))
-
-    probe_config = {
-        "device": str(config["device"]),
-        "seed": int(config["seed"]),
-        "torch_epochs": 100,
-        "torch_lr": 0.05,
-        "torch_batch_size": 2048,
-        "max_iter": 1000,
-        "tol": 1e-3,
-        "c_min": 1e-4,
-        "c_max": 1.0,
-        "optuna": {"trials": 10, "target_metric": "f1_macro"},
-        "knn_neighbors": [5],
-    }
+    crop_frames = int(config["augment"]["crop_frames"])
 
     import optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     written_ckpts: list[Path] = []
-    ratio_candidates: dict[int, list[tuple[float, Path, list[Path]]]] = {}
+    candidates: list[tuple[float, Path]] = []
 
     for embedding_dim in embedding_dims:
         for ratio in ratios:
@@ -535,11 +518,9 @@ def main() -> int:
                     cs_prob = float(config.get("cs_prob", 1.0))
                     symmetric = bool(config.get("symmetric", False))
                     source = get_source_name(aug, sensing_pair, ratio, proj_dim, embedding_dim, cs_prob, symmetric)
-                    dataset_name = str(config.get("dataset", data_dir.name))
                     ckpt_path = checkpoint_dir / f"{source}_{dataset_name}.pt"
 
-                    force_retrain = bool(config.get("force_retrain", False))
-                    if not force_retrain and ckpt_path.exists():
+                    if not bool(config.get("force_retrain", False)) and ckpt_path.exists():
                         log(f"skipping source={source} — checkpoint exists")
                         ckpt = ckpt_path
                     else:
@@ -550,40 +531,31 @@ def main() -> int:
                         )
                     written_ckpts.append(ckpt)
 
-                    split_parquets = [output_dir / f"{source}_{dataset_name}_{split}.parquet" for split in SPLITS]
-                    if all(p.exists() for p in split_parquets):
-                        log(f"skipping extract source={source} — parquets exist")
-                        parquet_paths = split_parquets
-                    else:
-                        parquet_paths = extract_embeddings(data_dir, ckpt, output_dir, config, device)
-
-                    log(f"probing source={source}...")
-                    val_f1 = _probe_val_f1(parquet_paths, probe_config)
+                    payload = torch.load(ckpt, map_location=device, weights_only=False)
+                    m_cfg = payload["model"]
+                    probe_model = BarlowTwinsModel(
+                        embedding_dim=int(payload["embedding_dim"]),
+                        base_channels=int(m_cfg["base_channels"]),
+                        dropout=0.0,
+                        projector_hidden_dim=int(m_cfg["projection_hidden_dim"]),
+                        projector_dim=int(m_cfg["projection_dim"]),
+                    ).to(device)
+                    probe_model.load_state_dict(payload["state_dict"])
+                    val_f1 = _quick_probe(probe_model, data_dir, crop_frames, device)
+                    del probe_model
                     log(f"probe source={source} val_f1={val_f1:.4f}")
-                    ratio_candidates.setdefault(ratio, []).append((val_f1, ckpt, parquet_paths))
+                    extract_embeddings(data_dir, ckpt, output_dir, config, device)
+                    candidates.append((val_f1, ckpt))
 
-    report("=== per-ratio best by val_f1 ===")
-    best_records = []
-    for ratio in sorted(ratio_candidates):
-        candidates = ratio_candidates[ratio]
-        best_val_f1, best_ckpt, best_parquets = max(candidates, key=lambda t: t[0])
-        best_source = torch.load(best_ckpt, map_location="cpu", weights_only=False)["source_name"]
-        report(f"ratio={ratio}% best_source={best_source} val_f1={best_val_f1:.4f}")
-        best_records.append({
-            "ratio": ratio,
-            "source": best_source,
-            "val_f1": best_val_f1,
-            "ckpt": str(best_ckpt),
-            "parquets": [str(p) for p in best_parquets],
-        })
-
-    selection_path = checkpoint_dir / f"hybrid_barlow_{sensing_pair}_{dataset_name}_best_by_ratio.json"
-    selection_path.write_text(json.dumps(best_records, indent=2), encoding="utf-8")
-    report(f"saved selection={selection_path}")
+    best_val_f1, best_ckpt = max(candidates, key=lambda t: t[0])
+    best_source = torch.load(best_ckpt, map_location="cpu", weights_only=False)["source_name"]
+    report(f"best_source={best_source} val_f1={best_val_f1:.4f}")
 
     manifest = {
         "dataset": dataset_name,
         "sensing_pair": sensing_pair,
+        "best_source": best_source,
+        "best_val_f1": best_val_f1,
         "checkpoints": [p.as_posix() for p in written_ckpts],
     }
     manifest_path = checkpoint_dir / f"hybrid_barlow_{sensing_pair}_{dataset_name}_checkpoints.json"

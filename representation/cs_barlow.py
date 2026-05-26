@@ -51,6 +51,8 @@ DEFAULT_CONFIG: dict = {
     "gl5_threshold": 2.0,
     "gl5_strip": 5,
     "gl5_grace": 20,
+    "up_k_min": 5.0,
+    "up_k_strip": 10,
     "barlow_lambda": 0.05,
     "augment": {
         "crop_frames": 128,
@@ -117,22 +119,26 @@ def train_epoch(
     model: CSBarlowModel,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
     device: torch.device,
     lambd: float,
 ) -> dict[str, float]:
     model.train()
     totals: dict[str, float] = {"loss": 0.0, "on_diag": 0.0, "off_diag": 0.0}
     n = 0
+    use_amp = device.type == "cuda"
     for v1, v2 in loader:
         if v1.size(0) < 2:
             continue
         v1 = v1.to(device, non_blocking=True)
         v2 = v2.to(device, non_blocking=True)
-        _, _, z1, z2 = model(v1, v2)
-        loss, on_diag, off_diag = barlow_twins_loss(z1, z2, lambd)
+        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
+            _, _, z1, z2 = model(v1, v2)
+            loss, on_diag, off_diag = barlow_twins_loss(z1, z2, lambd)
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         bs = v1.size(0)
         totals["loss"] += loss.item() * bs
         totals["on_diag"] += on_diag.item() * bs
@@ -152,13 +158,15 @@ def validation_epoch(
     model.eval()
     totals: dict[str, float] = {"loss": 0.0, "on_diag": 0.0, "off_diag": 0.0}
     n = 0
+    use_amp = device.type == "cuda"
     for v1, v2 in loader:
         if v1.size(0) < 2:
             continue
         v1 = v1.to(device, non_blocking=True)
         v2 = v2.to(device, non_blocking=True)
-        _, _, z1, z2 = model(v1, v2)
-        loss, on_diag, off_diag = barlow_twins_loss(z1, z2, lambd)
+        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
+            _, _, z1, z2 = model(v1, v2)
+            loss, on_diag, off_diag = barlow_twins_loss(z1, z2, lambd)
         bs = v1.size(0)
         totals["loss"] += loss.item() * bs
         totals["on_diag"] += on_diag.item() * bs
@@ -170,7 +178,8 @@ def validation_epoch(
 
 
 def clone_state(model: CSBarlowModel) -> dict[str, torch.Tensor]:
-    return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    src = getattr(model, "_orig_mod", model)
+    return {k: v.detach().cpu().clone() for k, v in src.state_dict().items()}
 
 
 def train_one(
@@ -186,17 +195,18 @@ def train_one(
     dataset_name = str(config.get("dataset", data_dir.name))
     lambd = float(config["barlow_lambda"])
 
-    train_ds = CSVICRegDataset(data_dir, "training", sensing_pair, ratio, config["augment"])
-    val_ds = CSVICRegDataset(data_dir, "validation", sensing_pair, ratio, config["augment"])
+    use_lr = bool(config.get("use_low_rank", False))
+    train_ds = CSVICRegDataset(data_dir, "training", sensing_pair, ratio, config["augment"], use_low_rank=use_lr)
+    val_ds = CSVICRegDataset(data_dir, "validation", sensing_pair, ratio, config["augment"], use_low_rank=use_lr)
 
     nw = int(config["num_workers"])
     bs = int(config["batch_size"])
     train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=nw,
                               pin_memory=device.type == "cuda", drop_last=True,
-                              persistent_workers=nw > 0)
+                              persistent_workers=nw > 0, prefetch_factor=4 if nw > 0 else None)
     val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=nw,
                             pin_memory=device.type == "cuda", drop_last=False,
-                            persistent_workers=nw > 0)
+                            persistent_workers=nw > 0, prefetch_factor=4 if nw > 0 else None)
 
     model = CSBarlowModel(
         embedding_dim=embedding_dim,
@@ -205,12 +215,14 @@ def train_one(
         projection_hidden_dim=int(config["projection_hidden_dim"]),
         projection_dim=int(config["projection_dim"]),
     ).to(device)
+    model = torch.compile(model)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(config["learning_rate"]),
         weight_decay=float(config["weight_decay"]),
     )
+    scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
 
     epochs = int(config["epochs"])
     warmup = int(config["warmup_epochs"])
@@ -219,6 +231,8 @@ def train_one(
     gl5_threshold = float(config["gl5_threshold"])
     gl5_strip = int(config["gl5_strip"])
     gl5_grace = int(config["gl5_grace"])
+    up_k_min = float(config["up_k_min"])
+    up_k_strip = int(config["up_k_strip"])
 
     best_val_loss = float("inf")
     best_state: dict = {}
@@ -226,11 +240,12 @@ def train_one(
     best_val_metrics: dict[str, float] = {}
     val_loss_history: list[float] = []
     gl2_history: list[float] = []
+    p_k_history: list[float] = []
     epoch_history: list[dict] = []
 
     for epoch in range(epochs):
         cosine_lr(optimizer, epoch, epochs, warmup, base_lr)
-        train_m = train_epoch(model, train_loader, optimizer, device, lambd)
+        train_m = train_epoch(model, train_loader, optimizer, scaler, device, lambd)
         val_m = validation_epoch(model, val_loader, device, lambd)
 
         vl = val_m["loss"]
@@ -253,13 +268,15 @@ def train_one(
         gl2 = 100.0 * (vl / best_val_loss - 1.0)
         gl2_history.append(gl2)
 
+        p_k = float("nan")
         if len(val_loss_history) >= gl2_strip:
             strip = val_loss_history[-gl2_strip:]
             strip_min = min(strip)
             p_k = max(1000.0 * (sum(strip) / (gl2_strip * strip_min) - 1.0), 1e-8)
-            gl2_str = f" GL2={gl2:.2f} P_k={p_k:.2f}"
+            gl2_str = f" sGLt={gl2:.2f} P_k={p_k:.2f}"
         else:
-            gl2_str = f" GL2={gl2:.2f}"
+            gl2_str = f" sGLt={gl2:.2f}"
+        p_k_history.append(p_k)
 
         log(
             f"source={source} epoch={epoch+1}/{epochs} "
@@ -268,11 +285,16 @@ def train_one(
             f"{gl2_str}"
         )
 
-        if (epoch + 1 > gl5_grace
-                and len(gl2_history) >= gl5_strip
-                and all(g > gl5_threshold for g in gl2_history[-gl5_strip:])):
-            log(f"source={source} early_stop=GL5 epoch={epoch+1} GL2={gl2:.2f} threshold={gl5_threshold}")
-            break
+        if epoch + 1 > gl5_grace:
+            if (len(gl2_history) >= gl5_strip
+                    and all(g > gl5_threshold for g in gl2_history[-gl5_strip:])):
+                log(f"source={source} early_stop=sGLt epoch={epoch+1} sGLt={gl2:.2f} threshold={gl5_threshold}")
+                break
+            finite_pk = [p for p in p_k_history[-up_k_strip:] if p == p]
+            if (len(finite_pk) >= up_k_strip
+                    and all(p < up_k_min for p in finite_pk)):
+                log(f"source={source} early_stop=UP_k epoch={epoch+1} P_k={p_k:.2f}")
+                break
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = checkpoint_dir / f"{source}_{dataset_name}.pt"
@@ -327,7 +349,7 @@ def extract_embeddings(
     augment_cfg = dict(payload["augment"])
     crop_frames = int(augment_cfg["crop_frames"])
 
-    written: list[Path] = []
+    all_frames: list[pd.DataFrame] = []
     for split in SPLITS:
         manifest = load_manifest(data_dir, split)
 
@@ -335,8 +357,9 @@ def extract_embeddings(
         track_ids: list = []
         genre_tops: list = []
 
+        use_lr = bool(config.get("use_low_rank", False))
         for _, row in manifest.iterrows():
-            mel_path = resolve_relative_data_path(data_dir, str(row["mel_path"]))
+            mel_path = resolve_relative_data_path(data_dir, str(row["mel_path"]), use_lr)
             mel = torch.load(mel_path, map_location="cpu", weights_only=True).float()
             if mel.ndim != 2:
                 continue
@@ -358,18 +381,24 @@ def extract_embeddings(
         out_frame["family"] = "cs_barlow"
         out_frame["split"] = split
         out_frame["ratio_percent"] = ratio
+        out_frame["sensing_pair"] = sensing_pair
         out_frame["m_dim"] = embedding_dim
         out_frame["input_dim"] = embedding_dim
         out_frame["seed"] = int(config.get("seed", 0))
         out_frame["dataset"] = dataset_name
+        all_frames.append(out_frame)
+        report(f"extracted source={source} split={split} n={len(Z)}")
 
-        output_dir.mkdir(parents=True, exist_ok=True)
-        out_path = output_dir / f"{source}_{dataset_name}_{split}.parquet"
-        out_frame.to_parquet(out_path, index=False)
-        written.append(out_path)
-        report(f"extracted source={source} split={split} n={len(Z)} path={out_path}")
-
-    return written
+    if not all_frames:
+        return []
+    out_path = output_dir / f"cs_barlow_{dataset_name}.parquet"
+    existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame()
+    combined = pd.concat([existing, *all_frames], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["method", "split", "track_id"], keep="last")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    combined.to_parquet(out_path, index=False)
+    report(f"wrote path={out_path} total_rows={len(combined)}")
+    return [out_path]
 
 
 def main() -> int:
@@ -392,7 +421,14 @@ def main() -> int:
     for embedding_dim in embedding_dims:
         for sensing_pair in sensing_pairs:
             for ratio in ratios:
-                ckpt = train_one(data_dir, checkpoint_dir, embedding_dim, sensing_pair, ratio, config, device)
+                source = get_source_name(embedding_dim, sensing_pair, ratio)
+                dataset_name = str(config.get("dataset", data_dir.name))
+                ckpt_path = checkpoint_dir / f"{source}_{dataset_name}.pt"
+                if ckpt_path.exists():
+                    log(f"skipping source={source} — checkpoint exists")
+                    ckpt = ckpt_path
+                else:
+                    ckpt = train_one(data_dir, checkpoint_dir, embedding_dim, sensing_pair, ratio, config, device)
                 written_ckpts.append(ckpt)
                 extract_embeddings(data_dir, ckpt, output_dir, config, device)
 
