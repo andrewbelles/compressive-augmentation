@@ -1,0 +1,40 @@
+device: auto
+seed: 17
+dataset: fma_small
+sample_rate: 22050
+segment_seconds: 3.0
+
+mode: cs
+embedding_dims: [256]
+ratios: [10, 20, 30]
+policies: [w4]
+
+n_fft: 1024
+hop_length: 256
+n_mels: 128
+base_channels: 16
+n_blocks: 3
+projection_hidden_dim: 1024
+projection_dim: 256
+
+batch_size: 64
+num_workers: 8
+epochs: 300
+learning_rate: 3.0e-4
+weight_decay: 1.0e-4
+warmup_epochs: 20
+gl2_strip: 4
+gl5_threshold: 2.0
+gl5_strip: 5
+gl5_grace: 30
+up_k_min: 5.0
+up_k_strip: 10
+barlow_lambda: 0.005
+force_retrain: false
+
+wave_augment:
+  wave_stretch_scale: [0.8, 1.2]
+  wave_gain_strength: 0.25
+  wave_n_masks: 2
+  wave_mask_width: 4410
+  wave_noise_std: 0.005

@@ -1,16 +1,18 @@
 device: auto
-seed: 17
+seed: 0
 use_low_rank: false
 dataset: fma_small_mel
 
-sensing_pair: dct_dct
+sensing_pair: patch_dct
 
-augmentations: [a1]
-ratios: [80, 90]
+augmentations: [a3, a4]
+ratios: [10, 20]
+
 projection_dims: [256]
 embedding_dims: [256]
 cs_prob: 1.0
 symmetric: false
+force_retrain: false
 
 base_channels: 32
 dropout: 0.0
@@ -24,14 +26,17 @@ warmup_epochs: 20
 gl2_strip: 5
 gl5_threshold: 3.0
 gl5_strip: 5
-gl5_grace: 50
+gl5_grace: 30
 up_k_min: 5.0
 up_k_strip: 10
 barlow_lambda: 0.005
 
 augment:
   crop_frames: 256
-  resize_scale: [0.85, 1.0]
-  linear_fader_strength: 0.15
-  time_mask_width: 24
-  freq_mask_width: 8
+  resize_scale: [0.6, 1.0]
+  linear_fader_strength: 0.25
+  time_mask_width: 48
+  freq_mask_width: 16
+  noise_std: 0.05
+  patch_f: 16
+  patch_t: 16
