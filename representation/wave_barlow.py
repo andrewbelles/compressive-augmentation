@@ -230,6 +230,7 @@ def _build_dataset(
     seed: int,
     exclude_genres: list[str] | None = None,
 ):
+    # NOTE: training crops are sampled from a random offset in [10s, 25s) per track.
     if mode == "cs":
         return WaveBarlowDataset(data_dir, split, ratio, seg, sr, audio_root, seed=seed, exclude_genres=exclude_genres)
     if mode == "traditional":
@@ -319,8 +320,6 @@ def train_one(
 
     for epoch in range(epochs):
         cosine_lr(optimizer, epoch, epochs, warmup, base_lr)
-        train_ds.epoch = epoch
-        val_ds.epoch = epoch
         train_m = train_epoch(model, train_loader, optimizer, scaler, device, lambd)
         val_m   = validation_epoch(model, val_loader, device, lambd)
         vl = val_m["loss"]
@@ -465,6 +464,8 @@ def extract_embeddings(
                 y_full = _load_waveform(audio_path, sr, 0.0, full_seconds)
             except Exception:
                 continue
+            # NOTE: extraction crops span [0s, 30s) deterministically, while training
+            # only samples from [10s, 25s). The 0-10s and 25-30s regions are eval-only.
             crops = []
             for start in range(0, full_samples - seg_samples + 1, seg_samples):
                 crops.append(y_full[start : start + seg_samples])

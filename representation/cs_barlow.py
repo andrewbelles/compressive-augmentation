@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 from compression.train_utils import load_config, resolve_device, set_seed
 from representation.audio import (
     CSBarlowModel,
-    CSVICRegDataset,
+    CSBarlowDataset,
     barlow_twins_loss,
     crop_or_pad,
     load_manifest,
@@ -196,8 +196,8 @@ def train_one(
     lambd = float(config["barlow_lambda"])
 
     use_lr = bool(config.get("use_low_rank", False))
-    train_ds = CSVICRegDataset(data_dir, "training", sensing_pair, ratio, config["augment"], use_low_rank=use_lr)
-    val_ds = CSVICRegDataset(data_dir, "validation", sensing_pair, ratio, config["augment"], use_low_rank=use_lr)
+    train_ds = CSBarlowDataset(data_dir, "training", sensing_pair, ratio, config["augment"], use_low_rank=use_lr)
+    val_ds = CSBarlowDataset(data_dir, "validation", sensing_pair, ratio, config["augment"], use_low_rank=use_lr)
 
     nw = int(config["num_workers"])
     bs = int(config["batch_size"])
