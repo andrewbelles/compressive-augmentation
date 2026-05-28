@@ -1,12 +1,5 @@
-classifier: logistic
-optuna:
-  trials: 20
-  target_metric: f1_macro
-c_min: 1.0e-4
-c_max: 1.0
-max_iter: 10000
-tol: 1.0e-3
-device: cuda
-torch_epochs: 200
-torch_lr: 0.05
-torch_batch_size: 2048
+seed: 7
+c_grid: [1.0e-4, 2.154e-4, 4.642e-4, 1.0e-3, 2.154e-3, 4.642e-3, 1.0e-2, 2.154e-2, 4.642e-2, 0.1, 0.4642, 10.0]
+max_iter: 2000
+tol: 1.0e-4
+knn_neighbors: [3, 5, 9, 15, 25]

@@ -1,3 +1,4 @@
+shell.nix
 .codex
 .env
 .clangd
@@ -28,3 +29,5 @@ __pycache__/
 /evaluation/images/*
 
 logs/
+
+compressive_augmentation.egg-info/

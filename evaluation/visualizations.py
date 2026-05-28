@@ -2,24 +2,22 @@
 #
 # visualizations.py  Andrew Belles  April 13th, 2026
 #
-# Plotting helpers for linear probe evaluation.
+# Notebook-facing plotting helpers for waveform Barlow Twins evaluation.
 #
 
 import os
-import json
-from pathlib import Path
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/fma-topology-evaluation-matplotlib")
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/spiky-matplotlib")
 
 import matplotlib
-
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from matplotlib.ticker import ScalarFormatter
+from matplotlib.ticker import MultipleLocator
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 
 GENRE_ORDER = [
@@ -33,539 +31,227 @@ GENRE_ORDER = [
     "Rock",
 ]
 
-ANCHOR_BASELINE_CONFIG = {
-    "anchor_dir": "representation/data",
-    "source": "anchor",
-    "dataset": "fma_small_mel",
+METHOD_COLORS = {
+    "cs_biased": "#1f77b4",
+    "cs_uniform": "#ff7f0e",
+    "abt": "#2ca02c",
+    "raw_mel": "#9467bd",
 }
 
 
-def configure_anchor_baseline(config: dict) -> None:
-    ANCHOR_BASELINE_CONFIG.update(
-        {
-            "anchor_dir": str(config.get("anchor_dir", ANCHOR_BASELINE_CONFIG["anchor_dir"])),
-            "source": str(config.get("source", ANCHOR_BASELINE_CONFIG["source"])),
-            "dataset": str(config.get("dataset", ANCHOR_BASELINE_CONFIG["dataset"])),
-        }
-    )
+def _genre_order(labels: list[str]) -> list[str]:
+    ordered = [g for g in GENRE_ORDER if g in labels]
+    ordered += [g for g in labels if g not in ordered]
+    return ordered
 
 
-def ratio_axis_max(frame: pd.DataFrame) -> float:
-    if frame.empty or "ratio_percent" not in frame.columns:
-        return 100.0
-    ratios = pd.to_numeric(frame["ratio_percent"], errors="coerce").dropna()
-    if ratios.empty:
-        return 100.0
-    return max(1.0, float(ratios.max()))
+def plot_ratio_vs_f1(
+    summary: pd.DataFrame,
+    ax: plt.Axes | None = None,
+    metric: str = "test_f1_macro",
+    title: str | None = None,
+    baseline_f1: float | None = None,
+) -> plt.Axes:
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 5))
 
+    methods = summary["method"].unique()
+    for method in sorted(methods):
+        sub = summary[summary["method"] == method].sort_values("ratio_percent")
+        color = METHOD_COLORS.get(method)
+        ax.plot(sub["ratio_percent"], sub[metric], marker="o", linewidth=2,
+                markersize=6, label=method, color=color)
 
-def score_axis_bounds(values: pd.Series | list[float], extra_values: list[float] | None = None) -> tuple[float, float]:
-    series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
-    if extra_values:
-        series = pd.concat([series, pd.to_numeric(pd.Series(extra_values), errors="coerce").dropna()], ignore_index=True)
-    if series.empty:
-        return 0.0, 1.0
-    lower = float(series.min())
-    upper = float(series.max())
-    span = max(upper - lower, 0.02)
-    padding = max(0.015, span * 0.2)
-    return max(0.0, lower - padding), min(1.0, upper + padding)
+    if baseline_f1 is not None:
+        ax.axhline(baseline_f1, color="black", linestyle="--", linewidth=1.2,
+                   alpha=0.8, label="ABT baseline (r=100)")
 
-
-def set_tight_score_axis(axis: plt.Axes, values: pd.Series | list[float], extra_values: list[float] | None = None) -> None:
-    lower, upper = score_axis_bounds(values, extra_values)
-    axis.set_ylim(lower, upper)
-
-
-def anchor_baseline(metric_column: str) -> float | None:
-    metric_map = {
-        "test_f1_macro": "test_logistic_f1_macro",
-        "test_pr_auc_macro": "test_logistic_pr_auc_macro",
-        "test_accuracy": "test_logistic_accuracy",
-        "validation_f1_macro": "validation_logistic_f1_macro",
-        "validation_pr_auc_macro": "validation_logistic_pr_auc_macro",
-        "validation_accuracy": "validation_logistic_accuracy",
-    }
-    anchor_dir = Path(str(ANCHOR_BASELINE_CONFIG["anchor_dir"])).expanduser()
-    source = str(ANCHOR_BASELINE_CONFIG["source"])
-    dataset = str(ANCHOR_BASELINE_CONFIG["dataset"])
-    metadata_path = anchor_dir / f"{source}_{dataset}_metadata.json"
-    if metadata_path.is_file():
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        selected_metrics = payload.get("selected_metrics", {})
-        value = selected_metrics.get(metric_map.get(metric_column, metric_column))
-        if value is not None and pd.notna(value):
-            return float(value)
-
-    data_root = Path(__file__).resolve().parent / "data"
-    candidate_paths = [
-        data_root / f"{source}_{dataset}_logistic_summary.csv",
-        data_root / "anchor_r100_s00_logistic_summary.csv",
-    ]
-    path = next((candidate for candidate in candidate_paths if candidate.is_file()), None)
-    if path is None:
-        return None
-    frame = pd.read_csv(path)
-    if frame.empty or metric_column not in frame.columns:
-        return None
-    values = pd.to_numeric(frame[metric_column], errors="coerce").dropna()
-    if values.empty:
-        return None
-    return float(values.max())
-
-
-def add_anchor_baseline(axis: plt.Axes, metric_column: str | list[str]) -> list[float]:
-    columns = [metric_column] if isinstance(metric_column, str) else metric_column
-    values = [value for column in columns if (value := anchor_baseline(column)) is not None]
-    if not values:
-        return []
-    label = "Anchor upper bound"
-    for index, value in enumerate(values):
-        axis.axhline(
-            value,
-            color="black",
-            linestyle="--",
-            linewidth=1.0,
-            alpha=0.9,
-            label=label if index == 0 else None,
-        )
-    return values
-
-
-def clean_label(label: str) -> str:
-    return label.replace("_", " ").strip().title()
-
-
-def order_labels(labels: list[str]) -> list[str]:
-    cleaned = [clean_label(label) for label in labels]
-    order = [label for label in GENRE_ORDER if label in cleaned]
-    order.extend(label for label in cleaned if label not in order)
-    return order
-
-
-def save_subset_accuracy_plot(
-    subset_frame: pd.DataFrame,
-    output_path: Path,
-    title: str,
-) -> Path:
-    sns.set_theme(style="whitegrid")
-    figure, axis = plt.subplots(figsize=(9, 6), constrained_layout=True)
-
-    plot_frame = subset_frame.copy()
-    plot_frame["subset_percent"] = plot_frame["subset_fraction"] * 100.0
-    metric_columns = {
-        "test_accuracy": ("Accuracy", "#1f77b4"),
-        "test_f1_macro": ("F1 Macro", "#ff7f0e"),
-        "test_pr_auc_macro": ("PR-AUC Macro", "#2ca02c"),
-    }
-
-    for column, (label, color) in metric_columns.items():
-        sns.lineplot(
-            data=plot_frame,
-            x="subset_percent",
-            y=column,
-            marker="o",
-            linewidth=2.0,
-            markersize=7,
-            ax=axis,
-            color=color,
-            label=label,
-        )
-
-    axis.set_xscale("log")
-    axis.xaxis.set_major_formatter(ScalarFormatter())
-    axis.set_xlabel("Training Subset (%)")
-    axis.set_ylabel("Score")
-    axis.set_ylim(0.0, 1.0)
-    axis.set_title(title)
-    axis.grid(True, which="both", alpha=0.25)
-    axis.legend(title="Metric")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=200)
-    plt.close(figure)
-    return output_path
-
-
-def save_confusion_matrix_plot(
-    matrix: np.ndarray,
-    labels: list[str],
-    output_path: Path,
-    title: str,
-) -> Path:
-    sns.set_theme(style="white")
-    ordered_labels = order_labels(labels)
-    label_to_index = {clean_label(label): index for index, label in enumerate(labels)}
-    reorder_indices = [label_to_index[label] for label in ordered_labels]
-    ordered_matrix = matrix[np.ix_(reorder_indices, reorder_indices)]
-
-    figure, axis = plt.subplots(figsize=(9, 7), constrained_layout=True)
-    sns.heatmap(
-        ordered_matrix,
-        annot=True,
-        fmt=".2f",
-        cmap="Blues",
-        vmin=0.0,
-        vmax=1.0,
-        square=True,
-        xticklabels=ordered_labels,
-        yticklabels=ordered_labels,
-        cbar_kws={"label": "Row-Normalized Accuracy"},
-        ax=axis,
-    )
-    axis.set_xlabel("Predicted Genre")
-    axis.set_ylabel("True Genre")
-    axis.set_title(title)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=200)
-    plt.close(figure)
-    return output_path
-
-
-def save_ratio_metric_plot(
-    summary_frame: pd.DataFrame,
-    metric_column: str,
-    output_path: Path,
-    title: str,
-    method_filter: str | None = None,
-) -> Path:
-    sns.set_theme(style="whitegrid")
-    figure, axis = plt.subplots(figsize=(10, 6), constrained_layout=True)
-
-    compressed = summary_frame[summary_frame["ratio_percent"].notna()].copy()
-    if method_filter is not None:
-        compressed = compressed[compressed["method"] == method_filter].copy()
-
-    if not compressed.empty:
-        compressed["ratio_percent"] = compressed["ratio_percent"].astype(float)
-        compressed[metric_column] = pd.to_numeric(compressed[metric_column], errors="coerce")
-        if method_filter is None:
-            sns.lineplot(
-                data=compressed,
-                x="ratio_percent",
-                y=metric_column,
-                hue="method",
-                marker="o",
-                linewidth=2.0,
-                markersize=6,
-                errorbar="se",
-                err_style="bars",
-                err_kws={"elinewidth": 0.9, "capsize": 3, "capthick": 0.9},
-                ax=axis,
-            )
-        else:
-            sns.lineplot(
-                data=compressed,
-                x="ratio_percent",
-                y=metric_column,
-                marker="o",
-                linewidth=2.0,
-                markersize=6,
-                errorbar="se",
-                err_style="bars",
-                err_kws={"elinewidth": 0.9, "capsize": 3, "capthick": 0.9},
-                ax=axis,
-                color="#1f77b4",
-                label=clean_label(method_filter),
-            )
-
-    max_ratio = ratio_axis_max(compressed)
-    anchor_values = add_anchor_baseline(axis, metric_column)
-
-    axis.set_xlabel("Compression Ratio m/N (%)")
-    axis.set_ylabel(clean_label(metric_column.replace("test_", "")))
-    set_tight_score_axis(axis, compressed[metric_column] if metric_column in compressed else [], anchor_values)
-    axis.set_xlim(left=0.0, right=float(max_ratio))
-    axis.set_title(title)
-    axis.grid(True, which="both", alpha=0.25)
-    if axis.get_legend() is not None:
-        axis.legend(title="Method")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=200)
-    plt.close(figure)
-    return output_path
-
-
-def save_dual_metric_method_plot(
-    summary_frame: pd.DataFrame,
-    output_path: Path,
-    title: str,
-    method_filter: str | None = None,
-) -> Path:
-    sns.set_theme(style="whitegrid")
-    figure, axis = plt.subplots(figsize=(10, 6), constrained_layout=True)
-    plot_frame = summary_frame[summary_frame["ratio_percent"].notna()].copy()
-    if method_filter is not None:
-        plot_frame = plot_frame[plot_frame["method"] == method_filter].copy()
-    if not plot_frame.empty:
-        plot_frame["ratio_percent"] = plot_frame["ratio_percent"].astype(float)
-        for _mc in ["test_f1_macro", "test_pr_auc_macro"]:
-            if _mc in plot_frame.columns:
-                plot_frame[_mc] = pd.to_numeric(plot_frame[_mc], errors="coerce")
-        melted = plot_frame.melt(
-            id_vars=["method", "ratio_percent", "seed"],
-            value_vars=["test_f1_macro", "test_pr_auc_macro"],
-            var_name="metric",
-            value_name="score",
-        )
-        melted["metric"] = melted["metric"].map(
-            {"test_f1_macro": "Macro-F1", "test_pr_auc_macro": "Macro PR-AUC"}
-        )
-        sns.lineplot(
-            data=melted,
-            x="ratio_percent",
-            y="score",
-            hue="method" if method_filter is None else "metric",
-            style="metric" if method_filter is None else None,
-            marker="o",
-            linewidth=2.0,
-            markersize=6,
-            errorbar="se",
-            err_style="bars",
-            err_kws={"elinewidth": 0.9, "capsize": 3, "capthick": 0.9},
-            ax=axis,
-        )
-
-    anchor_values = add_anchor_baseline(axis, ["test_f1_macro", "test_pr_auc_macro"])
-    axis.set_xlabel("Compression Ratio m/d (%)")
-    axis.set_ylabel("Score")
-    set_tight_score_axis(axis, plot_frame[["test_f1_macro", "test_pr_auc_macro"]].to_numpy().reshape(-1) if not plot_frame.empty else [], anchor_values)
-    axis.set_xlim(left=0.0, right=float(ratio_axis_max(plot_frame)))
-    axis.set_title(title)
-    axis.grid(True, which="both", alpha=0.25)
-    if axis.get_legend() is not None:
-        axis.legend(title="")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=200)
-    plt.close(figure)
-    return output_path
-
-
-def save_topology_preservation_plot(
-    frame: pd.DataFrame,
-    value_column: str,
-    output_path: Path,
-    title: str,
-    method_filter: str | None = None,
-) -> Path:
-    sns.set_theme(style="whitegrid")
-    figure, axis = plt.subplots(figsize=(11, 7), constrained_layout=True)
-    plot_frame = frame[frame["ratio_percent"].notna()].copy()
-    if method_filter is not None:
-        plot_frame = plot_frame[plot_frame["method"] == method_filter].copy()
-    plot_frame["ratio_percent"] = plot_frame["ratio_percent"].astype(float)
-
-    plot_kwargs = {
-        "data": plot_frame,
-        "x": "ratio_percent",
-        "y": value_column,
-        "hue": "genre_top",
-        "marker": "o",
-        "linewidth": 1.8,
-        "markersize": 5,
-        "ax": axis,
-    }
-    if method_filter is None:
-        plot_kwargs["style"] = "method"
-    sns.lineplot(**plot_kwargs)
-
-    axis.set_xlabel("Compression Ratio m/N (%)")
-    axis.set_ylabel(clean_label(value_column))
-    axis.set_xlim(left=0.0, right=float(ratio_axis_max(plot_frame)))
-    axis.set_title(title)
-    axis.grid(True, which="both", alpha=0.25)
-    if axis.get_legend() is not None:
-        sns.move_legend(axis, "upper left", bbox_to_anchor=(1.02, 1.0), frameon=True)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=200)
-    plt.close(figure)
-    return output_path
-
-
-def save_topology_metric_panel(
-    frame: pd.DataFrame,
-    method: str,
-    output_path: Path,
-) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    sns.set_theme(style="white")
-
-    plot_frame = frame[frame["method"] == method].copy()
-    def has_signal(column: str) -> bool:
-        if column not in plot_frame.columns:
-            return False
-        if column.endswith("_h1"):
-            return pd.to_numeric(plot_frame[column], errors="coerce").abs().sum() > 0
-        return True
-
-    if "persistence_image_h0" in plot_frame.columns:
-        candidate_metrics = [
-            ("wasserstein_h0", "Wasserstein H0"),
-            ("wasserstein_h1", "Wasserstein H1"),
-            ("persistence_image_h0", "Persistence Image H0"),
-            ("persistence_image_h1", "Persistence Image H1"),
-        ]
-    else:
-        candidate_metrics = [
-            ("wasserstein_h0", "Wasserstein H0"),
-            ("wasserstein_h1", "Wasserstein H1"),
-            ("betti_dist_h0", "BettiDist H0"),
-            ("betti_dist_h1", "BettiDist H1"),
-        ]
-    metrics = [(column, title) for column, title in candidate_metrics if has_signal(column)]
-    if not metrics:
-        metrics = [("wasserstein_h0", "Wasserstein H0")]
-
-    ncols = min(2, len(metrics))
-    nrows = int(np.ceil(len(metrics) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(7 * ncols, 4.8 * nrows), constrained_layout=True)
-    axes_array = np.asarray(axes, dtype=object).reshape(-1)
-    for ax, (column, title) in zip(axes_array, metrics, strict=False):
-        matrix = plot_frame.pivot_table(
-            index="genre_top",
-            columns="ratio_percent",
-            values=column,
-            aggfunc="mean",
-        )
-        genres = [genre for genre in GENRE_ORDER if genre in set(matrix.index)]
-        genres.extend(sorted(genre for genre in matrix.index if genre not in set(genres)))
-        matrix = matrix.reindex(index=genres, columns=sorted(matrix.columns))
-        values = matrix.to_numpy(dtype=float)
-        finite = values[np.isfinite(values)]
-        vmax = float(finite.max()) if finite.size else 1.0
-        sns.heatmap(
-            matrix,
-            ax=ax,
-            cmap="mako",
-            vmin=0.0,
-            vmax=vmax,
-            annot=True,
-            fmt=".2f",
-            annot_kws={"fontsize": 8},
-            linewidths=0.4,
-            linecolor="#ffffff",
-            cbar_kws={"label": title},
-        )
-        ax.set_title(title)
-        ax.set_xlabel("m/d (%)")
-        ax.set_ylabel("")
-        ax.tick_params(axis="x", rotation=0)
-        ax.tick_params(axis="y", rotation=0)
-    for ax in axes_array[len(metrics):]:
-        ax.axis("off")
-
-    fig.suptitle(f"Topology Preservation - {clean_label(method)} vs Anchor", fontsize=16)
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
-    return output_path
-
-
-def save_topology_performance_scatter(
-    frame: pd.DataFrame,
-    topology_metric: str,
-    performance_metric: str,
-    output_path: Path,
-    title: str,
-) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    sns.set_theme(style="whitegrid")
-
-    plot_frame = frame.dropna(subset=[topology_metric, performance_metric]).copy()
-    fig, ax = plt.subplots(figsize=(10, 7), constrained_layout=True)
-    if not plot_frame.empty:
-        sns.scatterplot(
-            data=plot_frame,
-            x=topology_metric,
-            y=performance_metric,
-            hue="method",
-            style="genre_top" if "genre_top" in plot_frame.columns else None,
-            size="ratio_percent",
-            sizes=(35, 130),
-            alpha=0.8,
-            ax=ax,
-        )
-    ax.set_title(title)
-    ax.set_xlabel(clean_label(topology_metric))
-    ax.set_ylabel(clean_label(performance_metric.replace("test_", "")))
-    anchor_values = add_anchor_baseline(ax, performance_metric)
-    set_tight_score_axis(ax, plot_frame[performance_metric] if performance_metric in plot_frame else [], anchor_values)
+    ax.set_xlabel("Compression ratio m/d (%)")
+    ax.set_ylabel("Macro F1 (test)")
+    ax.set_xlim(left=0)
+    ax.legend()
     ax.grid(True, alpha=0.25)
-    if ax.get_legend() is not None:
-        sns.move_legend(ax, "upper left", bbox_to_anchor=(1.02, 1.0), frameon=True)
-
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
-    return output_path
+    if title:
+        ax.set_title(title)
+    return ax
 
 
-def save_barlow_component_curves(
-    checkpoint_dir: Path,
-    output_path: Path,
-    sensing_pair: str | None = None,
-) -> Path:
+def plot_per_genre_f1(
+    per_genre: dict[str, float],
+    ax: plt.Axes | None = None,
+    title: str | None = None,
+    baseline_per_genre: dict[str, float] | None = None,
+) -> plt.Axes:
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 4))
+
+    genres = _genre_order(list(per_genre.keys()))
+    values = [per_genre.get(g, 0.0) for g in genres]
+    x = np.arange(len(genres))
+    width = 0.35 if baseline_per_genre else 0.6
+
+    ax.bar(x if baseline_per_genre else x, values, width=width,
+           color="#1f77b4", label="CS" if baseline_per_genre else None)
+
+    if baseline_per_genre:
+        base_values = [baseline_per_genre.get(g, 0.0) for g in genres]
+        ax.bar(x + width, base_values, width=width, color="#9467bd", label="ABT baseline")
+        ax.legend()
+
+    ax.set_xticks(x + width / 2 if baseline_per_genre else x)
+    ax.set_xticklabels(genres, rotation=30, ha="right")
+    ax.set_ylabel("F1 (test)")
+    ax.set_ylim(0, 1)
+    ax.grid(True, axis="y", alpha=0.25)
+    if title:
+        ax.set_title(title)
+    return ax
+
+
+def plot_confusion_matrix(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    labels: list[str],
+    ax: plt.Axes | None = None,
+    title: str | None = None,
+    normalize: bool = True,
+) -> plt.Axes:
+    from sklearn.metrics import confusion_matrix
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 6))
+
+    ordered = _genre_order(labels)
+    le = LabelEncoder().fit(labels)
+    cm = confusion_matrix(y_true, y_pred, labels=le.transform(ordered))
+
+    if normalize:
+        row_sums = cm.sum(axis=1, keepdims=True)
+        cm = np.where(row_sums > 0, cm / row_sums, 0.0)
+        fmt, vmax = ".2f", 1.0
+    else:
+        fmt, vmax = "d", None
+
+    sns.heatmap(cm, annot=True, fmt=fmt, cmap="Blues", vmin=0, vmax=vmax,
+                square=True, xticklabels=ordered, yticklabels=ordered,
+                cbar_kws={"label": "Row-normalized accuracy" if normalize else "Count"},
+                ax=ax)
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("True")
+    if title:
+        ax.set_title(title)
+    return ax
+
+
+def plot_umap(
+    embeddings: np.ndarray,
+    labels: np.ndarray | list,
+    label_names: list[str] | None = None,
+    ax: plt.Axes | None = None,
+    title: str | None = None,
+    seed: int = 7,
+    n_neighbors: int = 15,
+    min_dist: float = 0.1,
+) -> plt.Axes:
+    try:
+        import umap
+    except ImportError:
+        raise ImportError("umap-learn is required: pip install umap-learn")
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 6))
+
+    scaler = StandardScaler()
+    z = scaler.fit_transform(embeddings)
+    reducer = umap.UMAP(n_neighbors=n_neighbors, min_dist=min_dist,
+                        random_state=seed, n_jobs=1)
+    coords = reducer.fit_transform(z)
+
+    labels_arr = np.asarray(labels)
+    unique_labels = _genre_order(list(dict.fromkeys(labels_arr.tolist())))
+    palette = sns.color_palette("tab10", n_colors=len(unique_labels))
+    color_map = {g: palette[i] for i, g in enumerate(unique_labels)}
+
+    for genre in unique_labels:
+        mask = labels_arr == genre
+        ax.scatter(coords[mask, 0], coords[mask, 1], c=[color_map[genre]],
+                   s=8, alpha=0.6, label=genre)
+
+    ax.legend(markerscale=2, fontsize=8, bbox_to_anchor=(1.01, 1), loc="upper left")
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    if title:
+        ax.set_title(title)
+    return ax
+
+
+def plot_alignment_uniformity(
+    align_uniform: pd.DataFrame,
+    ax: plt.Axes | None = None,
+    title: str | None = None,
+) -> plt.Axes:
+    """
+    Expects a DataFrame with columns: ratio_percent, alignment, uniformity, method.
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 5))
+
+    for method in sorted(align_uniform["method"].unique()):
+        sub = align_uniform[align_uniform["method"] == method].sort_values("ratio_percent")
+        color = METHOD_COLORS.get(method)
+        ax.plot(sub["ratio_percent"], sub["alignment"], marker="o", linewidth=2,
+                markersize=5, label=f"{method} (align)", color=color, linestyle="-")
+        ax.plot(sub["ratio_percent"], sub["uniformity"], marker="s", linewidth=2,
+                markersize=5, label=f"{method} (unif)", color=color, linestyle="--")
+
+    ax.set_xlabel("Compression ratio m/d (%)")
+    ax.set_ylabel("Score")
+    ax.set_xlim(left=0)
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.25)
+    if title:
+        ax.set_title(title)
+    return ax
+
+
+def plot_training_curve(
+    checkpoint_path,
+    ax: plt.Axes | None = None,
+    title: str | None = None,
+) -> plt.Axes:
+    """
+    Plots train/val loss from a checkpoint's epoch_history list.
+    checkpoint_path: str or Path to a .pt file.
+    """
     import torch
 
-    ckpts = sorted(checkpoint_dir.glob("cs_barlow_*.pt"))
-    if sensing_pair:
-        ckpts = [p for p in ckpts if sensing_pair in p.stem]
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 4))
 
-    records: list[dict] = []
-    for ckpt in ckpts:
-        payload = torch.load(ckpt, map_location="cpu", weights_only=False)
-        source = str(payload["source_name"])
-        ratio = int(payload["ratio"])
-        pair = str(payload["sensing_pair"])
-        emb_dim = int(payload["embedding_dim"])
-        for row in payload.get("epoch_history", []):
-            records.append({
-                "source": source,
-                "sensing_pair": pair,
-                "embedding_dim": emb_dim,
-                "ratio": ratio,
-                "epoch": row["epoch"],
-                "on_diag": row["val_on_diag"],
-                "off_diag": row["val_off_diag"],
-            })
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    history = ckpt.get("epoch_history", [])
+    if not history:
+        raise ValueError(f"no epoch_history in {checkpoint_path}")
 
-    if not records:
-        raise ValueError(f"no epoch_history found in checkpoints under {checkpoint_dir}")
+    epochs = [h["epoch"] for h in history]
+    train_loss = [h["train_loss"] for h in history]
+    val_loss = [h["val_loss"] for h in history]
 
-    frame = pd.DataFrame.from_records(records)
+    ax.plot(epochs, train_loss, label="train", linewidth=2, color="#1f77b4")
+    ax.plot(epochs, val_loss, label="val", linewidth=2, color="#ff7f0e")
 
-    pairs = sorted(frame["sensing_pair"].unique())
-    dims = sorted(frame["embedding_dim"].unique())
-    components = ["on_diag", "off_diag"]
-    component_labels = {"on_diag": "On-diagonal", "off_diag": "Off-diagonal"}
-    colors = {1: "#1f77b4", 3: "#ff7f0e", 7: "#2ca02c", 10: "#d62728"}
+    best_ep = ckpt.get("best_epoch")
+    if best_ep is not None:
+        best_vl = ckpt.get("best_val_loss")
+        ax.axvline(best_ep, color="gray", linestyle=":", linewidth=1.2,
+                   label=f"best epoch={best_ep} val={best_vl:.4f}")
 
-    n_rows = len(pairs) * len(dims)
-    n_cols = len(components)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 3.5 * n_rows), squeeze=False)
-
-    row_idx = 0
-    for pair in pairs:
-        for dim in dims:
-            sub = frame[(frame["sensing_pair"] == pair) & (frame["embedding_dim"] == dim)]
-            for col_idx, comp in enumerate(components):
-                ax = axes[row_idx][col_idx]
-                for ratio in sorted(sub["ratio"].unique()):
-                    s = sub[sub["ratio"] == ratio].sort_values("epoch")
-                    ax.plot(s["epoch"], s[comp], color=colors.get(ratio, "gray"),
-                            label=f"r={ratio}%", linewidth=1.5)
-                ax.set_title(f"{pair} d={dim} — {component_labels[comp]}", fontsize=9)
-                ax.set_xlabel("Epoch")
-                ax.set_ylabel(component_labels[comp])
-                ax.legend(fontsize=7)
-                ax.grid(True, alpha=0.3)
-            row_idx += 1
-
-    fig.suptitle("CS-Barlow validation loss components by ratio", fontsize=12, y=1.01)
-    fig.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return output_path
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.legend()
+    ax.grid(True, alpha=0.25)
+    if title:
+        ax.set_title(title)
+    return ax
