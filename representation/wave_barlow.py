@@ -42,7 +42,8 @@ DEFAULT_CONFIG: dict = {
     "seed": 17,
     "dataset": "fma_small",
     "sample_rate": 22050,
-    "segment_seconds": 3.0,
+    "segment_seconds": 5.0,
+    "full_track_seconds": 30.0,
     "mode": "cs",
     "embedding_dims": [256],
     "ratios": [20],
@@ -54,7 +55,7 @@ DEFAULT_CONFIG: dict = {
     "n_blocks": 3,
     "projection_hidden_dim": 1024,
     "projection_dim": 256,
-    "batch_size": 64,  # 3blk c=16: fits at bs=64 (~2.53 GB peak)
+    "batch_size": 256,
     "num_workers": 8,
     "epochs": 300,
     "learning_rate": 3e-4,
@@ -66,7 +67,7 @@ DEFAULT_CONFIG: dict = {
     "gl5_grace": 30,
     "up_k_min": 5.0,
     "up_k_strip": 10,
-    "barlow_lambda": 0.005,
+    "barlow_lambda": 5e-5,
     "force_retrain": False,
     "wave_augment": {
         "wave_stretch_scale": [0.8, 1.2],
@@ -119,12 +120,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def get_source_name(mode: str, embedding_dim: int, ratio: int | None, policy: str | None) -> str:
+def get_source_name(
+    mode: str,
+    embedding_dim: int,
+    ratio: int | None,
+    policy: str | None,
+    exclude_genres: list[str] | None = None,
+) -> str:
+    suffix = "_nopop" if exclude_genres and "Pop" in exclude_genres else ""
     if mode == "cs":
-        return f"wave_barlow_cs_r{ratio:02d}_d{embedding_dim}"
+        return f"wave_barlow_cs_r{ratio:02d}_d{embedding_dim}{suffix}"
     if mode == "traditional":
-        return f"wave_barlow_abt_{policy}_d{embedding_dim}"
-    return f"wave_barlow_hybrid_{policy}_r{ratio:02d}_d{embedding_dim}"
+        return f"wave_barlow_abt_{policy}_d{embedding_dim}{suffix}"
+    return f"wave_barlow_hybrid_{policy}_r{ratio:02d}_d{embedding_dim}{suffix}"
 
 
 def cosine_lr(optimizer: torch.optim.Optimizer, epoch: int, epochs: int, warmup: int, base_lr: float) -> None:
@@ -215,12 +223,13 @@ def _build_dataset(
     audio_root: Path,
     wave_augment: dict,
     seed: int,
+    exclude_genres: list[str] | None = None,
 ):
     if mode == "cs":
-        return WaveBarlowDataset(data_dir, split, ratio, seg, sr, audio_root, seed=seed)
+        return WaveBarlowDataset(data_dir, split, ratio, seg, sr, audio_root, seed=seed, exclude_genres=exclude_genres)
     if mode == "traditional":
-        return WaveABTDataset(data_dir, split, policy, seg, sr, audio_root, wave_augment, seed=seed)
-    return HybridWaveDataset(data_dir, split, ratio, policy, seg, sr, audio_root, wave_augment, seed=seed)
+        return WaveABTDataset(data_dir, split, policy, seg, sr, audio_root, wave_augment, seed=seed, exclude_genres=exclude_genres)
+    return HybridWaveDataset(data_dir, split, ratio, policy, seg, sr, audio_root, wave_augment, seed=seed, exclude_genres=exclude_genres)
 
 
 def train_one(
@@ -234,7 +243,8 @@ def train_one(
     config: dict,
     device: torch.device,
 ) -> Path:
-    source = get_source_name(mode, embedding_dim, ratio, policy)
+    exclude_genres = list(config.get("exclude_genres", []))
+    source = get_source_name(mode, embedding_dim, ratio, policy, exclude_genres)
     dataset_name = str(config.get("dataset", "fma_small"))
     lambd = float(config["barlow_lambda"])
     sr = int(config["sample_rate"])
@@ -242,8 +252,8 @@ def train_one(
     seed = int(config["seed"])
     wave_augment = dict(config.get("wave_augment", {}))
 
-    train_ds = _build_dataset(mode, data_dir, "training",   ratio, policy, seg, sr, audio_root, wave_augment, seed)
-    val_ds   = _build_dataset(mode, data_dir, "validation", ratio, policy, seg, sr, audio_root, wave_augment, seed)
+    train_ds = _build_dataset(mode, data_dir, "training",   ratio, policy, seg, sr, audio_root, wave_augment, seed, exclude_genres)
+    val_ds   = _build_dataset(mode, data_dir, "validation", ratio, policy, seg, sr, audio_root, wave_augment, seed, exclude_genres)
 
     nw = int(config["num_workers"])
     bs = int(config["batch_size"])
@@ -435,6 +445,10 @@ def extract_embeddings(
         sensing_pair_val = "dct_wave"
         augmentation_val = str(ckpt_policy) if ckpt_policy else ""
 
+    seg_samples = int(sr * seg)
+    full_seconds = float(config.get("full_track_seconds", 30.0))
+    full_samples = int(sr * full_seconds)
+
     all_frames: list[pd.DataFrame] = []
     for split in SPLITS:
         manifest = load_manifest(data_dir, split)
@@ -443,12 +457,17 @@ def extract_embeddings(
         for _, row in manifest.iterrows():
             audio_path = audio_root / Path(row["audio_path"])
             try:
-                y = _load_waveform(audio_path, sr, 15.0, seg)
+                y_full = _load_waveform(audio_path, sr, 0.0, full_seconds)
             except Exception:
                 continue
-            x = torch.from_numpy(y).unsqueeze(0).unsqueeze(0).to(device)
-            h = model.encoder(x)
-            embeddings.append(h.squeeze(0).cpu().numpy())
+            crops = []
+            for start in range(0, full_samples - seg_samples + 1, seg_samples):
+                crops.append(y_full[start : start + seg_samples])
+            if not crops:
+                crops = [y_full[:seg_samples]]
+            batch = torch.from_numpy(np.stack(crops)).unsqueeze(1).to(device)
+            h = model.encoder(batch).mean(dim=0)
+            embeddings.append(h.cpu().numpy())
             track_ids.append(row["track_id"])
             genre_tops.append(row.get("genre_top", None))
 
@@ -499,6 +518,7 @@ def main() -> int:
     ratios = [int(r) for r in config.get("ratios", [20])]
     policies = [str(p) for p in config.get("policies", ["w2"])]
     dataset_name = str(config.get("dataset", "fma_small"))
+    exclude_genres = list(config.get("exclude_genres", []))
 
     if mode == "cs":
         grid = [(dim, r, None) for dim in embedding_dims for r in ratios]
@@ -509,7 +529,7 @@ def main() -> int:
 
     written_ckpts: list[Path] = []
     for embedding_dim, ratio, policy in grid:
-        source = get_source_name(mode, embedding_dim, ratio, policy)
+        source = get_source_name(mode, embedding_dim, ratio, policy, exclude_genres)
         ckpt_path = checkpoint_dir / f"{source}_{dataset_name}.pt"
         if ckpt_path.exists() and not force_retrain:
             log(f"skipping source={source} — checkpoint exists")

@@ -696,9 +696,12 @@ class WaveBarlowDataset(Dataset):
         sample_rate: int,
         audio_root: Path,
         seed: int = 0,
+        exclude_genres: list[str] | None = None,
     ) -> None:
         self.data_dir = data_dir.resolve()
         manifest = load_manifest(self.data_dir, split)
+        if exclude_genres:
+            manifest = manifest[~manifest["genre_top"].isin(exclude_genres)]
         self.rows = manifest.to_dict("records")
         self.ratio = int(ratio)
         self.segment_samples = int(sample_rate * segment_seconds)
@@ -735,9 +738,12 @@ class WaveABTDataset(Dataset):
         audio_root: Path,
         augment_config: dict,
         seed: int = 0,
+        exclude_genres: list[str] | None = None,
     ) -> None:
         self.data_dir = data_dir.resolve()
         manifest = load_manifest(self.data_dir, split)
+        if exclude_genres:
+            manifest = manifest[~manifest["genre_top"].isin(exclude_genres)]
         self.rows = manifest.to_dict("records")
         self.policy = str(policy)
         self.segment_samples = int(sample_rate * segment_seconds)
@@ -776,9 +782,12 @@ class HybridWaveDataset(Dataset):
         audio_root: Path,
         augment_config: dict,
         seed: int = 0,
+        exclude_genres: list[str] | None = None,
     ) -> None:
         self.data_dir = data_dir.resolve()
         manifest = load_manifest(self.data_dir, split)
+        if exclude_genres:
+            manifest = manifest[~manifest["genre_top"].isin(exclude_genres)]
         self.rows = manifest.to_dict("records")
         self.ratio = int(ratio)
         self.policy = str(policy)
@@ -869,7 +878,7 @@ class WaveSTFTEncoder(nn.Module):
         import torchaudio.functional as AF
         fb = AF.melscale_fbanks(
             n_freqs=n_fft // 2 + 1,
-            f_min=0.0,
+            f_min=80.0,
             f_max=float(sample_rate) / 2.0,
             n_mels=int(n_mels),
             sample_rate=int(sample_rate),
@@ -877,6 +886,8 @@ class WaveSTFTEncoder(nn.Module):
             mel_scale="htk",
         )
         self.register_buffer("mel_fb", fb)
+        self.register_buffer("mel_mean", torch.tensor(0.097534, dtype=torch.float32))
+        self.register_buffer("mel_std",  torch.tensor(0.175869, dtype=torch.float32))
         channels = [base_channels * (2 ** i) for i in range(int(n_blocks))]
         layers: list[nn.Module] = []
         in_ch = 1
@@ -889,7 +900,13 @@ class WaveSTFTEncoder(nn.Module):
             ])
             in_ch = out_ch
         self.features = nn.Sequential(*layers)
-        self.head = nn.Linear(channels[-1] * 2, embedding_dim)
+        feat_dim = channels[-1] * 2
+        self.head = nn.Sequential(
+            nn.Linear(feat_dim, feat_dim * 2, bias=False),
+            nn.BatchNorm1d(feat_dim * 2),
+            nn.ReLU(inplace=True),
+            nn.Linear(feat_dim * 2, embedding_dim),
+        )
 
     def _to_mel(self, x: torch.Tensor) -> torch.Tensor:
         y = x.squeeze(1)
@@ -907,6 +924,7 @@ class WaveSTFTEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         spec = self._to_mel(x)
+        spec = (spec - self.mel_mean) / self.mel_std
         feat = self.features(spec)
         pooled = torch.cat([feat.mean(dim=(2, 3)), feat.amax(dim=(2, 3))], dim=1)
         return self.head(pooled)

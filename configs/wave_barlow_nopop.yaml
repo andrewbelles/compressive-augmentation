@@ -1,5 +1,5 @@
 device: auto
-seed: 17
+seed: 0
 dataset: fma_small
 sample_rate: 22050
 segment_seconds: 5.0
@@ -7,8 +7,9 @@ full_track_seconds: 30.0
 
 mode: cs
 embedding_dims: [256]
-ratios: [10, 20, 30]
-policies: [w4]
+ratios: [10, 20, 30, 40]
+policies: [w3, w4]
+exclude_genres: [Pop]
 
 n_fft: 1024
 hop_length: 256

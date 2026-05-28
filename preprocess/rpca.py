@@ -15,6 +15,7 @@ import torch
 
 
 DEFAULT_MEL_DIR = Path("preprocess/data/fma_small_mel")
+DEFAULT_LAM_MULT = 0.10
 
 
 def report(message: str) -> None:
@@ -37,10 +38,10 @@ def parse_args() -> argparse.Namespace:
         help=f"Mel spectrogram directory. Defaults to {DEFAULT_MEL_DIR}.",
     )
     parser.add_argument(
-        "--lam",
+        "--lam-mult",
         type=float,
-        default=None,
-        help="RPCA regularisation lambda. Defaults to 1/sqrt(max(rows, cols)).",
+        default=DEFAULT_LAM_MULT,
+        help=f"Lambda multiplier applied to 1/sqrt(max(rows,cols)). Default {DEFAULT_LAM_MULT}.",
     )
     parser.add_argument(
         "--tol",
@@ -84,13 +85,12 @@ def resolve_device(device_str: str) -> torch.device:
 @torch.no_grad()
 def rpca_alm_torch(
     M: torch.Tensor,
-    lam: float | None = None,
+    lam_mult: float = DEFAULT_LAM_MULT,
     tol: float = 1e-7,
     max_iter: int = 500,
 ) -> torch.Tensor:
     m, n = M.shape
-    if lam is None:
-        lam = 1.0 / (max(m, n) ** 0.5)
+    lam = lam_mult / (max(m, n) ** 0.5)
 
     norm_two = max(torch.linalg.matrix_norm(M, ord=2).item(), 1e-10)
     norm_inf = (M.abs().max() / lam).item()
@@ -125,7 +125,7 @@ def rpca_alm_torch(
 def process_directory(
     data_dir: Path,
     device: torch.device,
-    lam: float | None,
+    lam_mult: float,
     tol: float,
     max_iter: int,
     skip_existing: bool,
@@ -134,7 +134,7 @@ def process_directory(
     total = len(mel_paths)
     processed = skipped = errors = 0
 
-    report(f"START data_dir={data_dir} total={total} device={device}")
+    report(f"START data_dir={data_dir} total={total} device={device} lam_mult={lam_mult}")
 
     for i, mel_path in enumerate(mel_paths, 1):
         lr_path = mel_path.with_suffix(".lr.pt")
@@ -143,7 +143,7 @@ def process_directory(
             continue
         try:
             M = torch.load(mel_path, map_location="cpu", weights_only=True).float().to(device)
-            L = rpca_alm_torch(M, lam=lam, tol=tol, max_iter=max_iter)
+            L = rpca_alm_torch(M, lam_mult=lam_mult, tol=tol, max_iter=max_iter)
             torch.save(L.cpu(), lr_path)
             processed += 1
         except Exception as exc:
@@ -167,7 +167,7 @@ def main() -> int:
     processed, skipped, errors = process_directory(
         data_dir,
         device=device,
-        lam=args.lam,
+        lam_mult=args.lam_mult,
         tol=args.tol,
         max_iter=args.max_iter,
         skip_existing=args.skip_existing,
