@@ -7,8 +7,9 @@ full_track_seconds: 30.0
 
 mode: cs
 embedding_dims: [256]
-ratios: [10, 20, 30]
-policies: [w4]
+ratios: [10, 20, 30, 40]
+policies: [w3, w4]
+exclude_genres: []
 
 n_fft: 1024
 hop_length: 256

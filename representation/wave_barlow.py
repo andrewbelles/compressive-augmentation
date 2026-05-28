@@ -48,17 +48,18 @@ DEFAULT_CONFIG: dict = {
     "embedding_dims": [256],
     "ratios": [20],
     "policies": ["w2", "w3"],
+    "exclude_genres": [],
     "n_fft": 1024,
     "hop_length": 256,
     "n_mels": 128,
     "base_channels": 16,
     "n_blocks": 3,
-    "projection_hidden_dim": 1024,
-    "projection_dim": 256,
+    "projection_hidden_dim": 4096,
+    "projection_dim": 2048,
     "batch_size": 256,
     "num_workers": 8,
     "epochs": 300,
-    "learning_rate": 3e-4,
+    "learning_rate": 1.2e-3,
     "weight_decay": 1e-4,
     "warmup_epochs": 20,
     "gl2_strip": 5,
@@ -116,6 +117,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode", type=str, choices=MODES, default=None,
         help="Training mode override: cs, traditional, or hybrid. Overrides config.",
+    )
+    parser.add_argument(
+        "--exclude-genres", type=str, nargs="*", default=None, metavar="GENRE",
+        help="Genres to exclude from training (e.g. --exclude-genres Pop). Overrides config.",
     )
     return parser.parse_args()
 
@@ -518,7 +523,11 @@ def main() -> int:
     ratios = [int(r) for r in config.get("ratios", [20])]
     policies = [str(p) for p in config.get("policies", ["w2"])]
     dataset_name = str(config.get("dataset", "fma_small"))
-    exclude_genres = list(config.get("exclude_genres", []))
+    if args.exclude_genres is not None:
+        exclude_genres = list(args.exclude_genres)
+        config["exclude_genres"] = exclude_genres
+    else:
+        exclude_genres = list(config.get("exclude_genres", []))
 
     if mode == "cs":
         grid = [(dim, r, None) for dim in embedding_dims for r in ratios]
