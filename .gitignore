@@ -4,6 +4,7 @@ shell.nix
 .clangd
 .venv/
 .cache/
+.ipynb_checkpoints/ 
 
 __pycache__/
 
