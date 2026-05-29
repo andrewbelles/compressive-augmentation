@@ -216,6 +216,41 @@ def plot_alignment_uniformity(
     return ax
 
 
+def plot_learning_curve(
+    results: pd.DataFrame,
+    ax: plt.Axes | None = None,
+    title: str | None = None,
+    log_scale: bool = True,
+    sweetspot_n: int | None = None,
+) -> plt.Axes:
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 5))
+
+    palette = sns.color_palette("tab10")
+    methods = sorted(results["method"].unique())
+    for i, method in enumerate(methods):
+        sub = results[results["method"] == method].sort_values("n_train")
+        short = method.replace("wave_barlow_", "")
+        ax.plot(sub["n_train"], sub["val_f1"], marker="o", linewidth=2,
+                markersize=5, label=short, color=palette[i % len(palette)])
+
+    if sweetspot_n is not None:
+        ax.axvline(sweetspot_n, color="gray", linestyle="--", linewidth=1.2,
+                   alpha=0.8, label=f"sweet spot n={sweetspot_n}")
+
+    if log_scale:
+        ax.set_xscale("log")
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x):,}"))
+
+    ax.set_xlabel("Training samples (log scale)" if log_scale else "Training samples")
+    ax.set_ylabel("Val F1-macro")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.25, which="both" if log_scale else "major")
+    if title:
+        ax.set_title(title)
+    return ax
+
+
 def plot_training_curve(
     checkpoint_path,
     ax: plt.Axes | None = None,

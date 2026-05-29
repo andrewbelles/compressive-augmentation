@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader
 
 from compression.train_utils import load_config, resolve_device, set_seed
 from representation.audio import (
+    ChainedHybridWaveDataset,
     HybridWaveDataset,
     WaveABTDataset,
     WaveBarlowDataset,
@@ -35,7 +36,7 @@ from representation.audio import (
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "configs" / "wave_barlow.yaml"
 DEFAULT_MEL_DIR = Path("preprocess/data/fma_small_mel")
 DEFAULT_AUDIO_ROOT = Path("preprocess/data")
-MODES = ("cs", "traditional", "hybrid")
+MODES = ("cs", "traditional", "hybrid", "hybrid_chain")
 
 DEFAULT_CONFIG: dict = {
     "device": "auto",
@@ -87,7 +88,7 @@ def report(message: str) -> None:
 
 
 def log(message: str) -> None:
-    print(message, file=sys.stderr, flush=True)
+    print(message, flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -131,12 +132,16 @@ def get_source_name(
     ratio: int | None,
     policy: str | None,
     exclude_genres: list[str] | None = None,
+    uniform: bool = False,
 ) -> str:
     suffix = "_nopop" if exclude_genres and "Pop" in exclude_genres else ""
     if mode == "cs":
-        return f"wave_barlow_cs_r{ratio:02d}_d{embedding_dim}{suffix}"
+        sampling = "_uniform" if uniform else ""
+        return f"wave_barlow_cs{sampling}_r{ratio:02d}_d{embedding_dim}{suffix}"
     if mode == "traditional":
         return f"wave_barlow_abt_{policy}_d{embedding_dim}{suffix}"
+    if mode == "hybrid_chain":
+        return f"wave_barlow_hybrid_chain_{policy}_r{ratio:02d}_d{embedding_dim}{suffix}"
     return f"wave_barlow_hybrid_{policy}_r{ratio:02d}_d{embedding_dim}{suffix}"
 
 
@@ -229,12 +234,15 @@ def _build_dataset(
     wave_augment: dict,
     seed: int,
     exclude_genres: list[str] | None = None,
+    uniform: bool = False,
 ):
     # NOTE: training crops are sampled from a random offset in [10s, 25s) per track.
     if mode == "cs":
-        return WaveBarlowDataset(data_dir, split, ratio, seg, sr, audio_root, seed=seed, exclude_genres=exclude_genres)
+        return WaveBarlowDataset(data_dir, split, ratio, seg, sr, audio_root, seed=seed, exclude_genres=exclude_genres, uniform=uniform)
     if mode == "traditional":
         return WaveABTDataset(data_dir, split, policy, seg, sr, audio_root, wave_augment, seed=seed, exclude_genres=exclude_genres)
+    if mode == "hybrid_chain":
+        return ChainedHybridWaveDataset(data_dir, split, ratio, policy, seg, sr, audio_root, wave_augment, seed=seed, exclude_genres=exclude_genres)
     return HybridWaveDataset(data_dir, split, ratio, policy, seg, sr, audio_root, wave_augment, seed=seed, exclude_genres=exclude_genres)
 
 
@@ -248,9 +256,10 @@ def train_one(
     policy: str | None,
     config: dict,
     device: torch.device,
+    uniform: bool = False,
 ) -> Path:
     exclude_genres = list(config.get("exclude_genres", []))
-    source = get_source_name(mode, embedding_dim, ratio, policy, exclude_genres)
+    source = get_source_name(mode, embedding_dim, ratio, policy, exclude_genres, uniform)
     dataset_name = str(config.get("dataset", "fma_small"))
     lambd = float(config["barlow_lambda"])
     sr = int(config["sample_rate"])
@@ -258,8 +267,8 @@ def train_one(
     seed = int(config["seed"])
     wave_augment = dict(config.get("wave_augment", {}))
 
-    train_ds = _build_dataset(mode, data_dir, "training",   ratio, policy, seg, sr, audio_root, wave_augment, seed, exclude_genres)
-    val_ds   = _build_dataset(mode, data_dir, "validation", ratio, policy, seg, sr, audio_root, wave_augment, seed, exclude_genres)
+    train_ds = _build_dataset(mode, data_dir, "training",   ratio, policy, seg, sr, audio_root, wave_augment, seed, exclude_genres, uniform)
+    val_ds   = _build_dataset(mode, data_dir, "validation", ratio, policy, seg, sr, audio_root, wave_augment, seed, exclude_genres, uniform)
 
     nw = int(config["num_workers"])
     bs = int(config["batch_size"])
@@ -445,6 +454,9 @@ def extract_embeddings(
     elif ckpt_mode == "traditional":
         sensing_pair_val = ""
         augmentation_val = str(ckpt_policy) if ckpt_policy else ""
+    elif ckpt_mode == "hybrid_chain":
+        sensing_pair_val = "wave_chain_dct"
+        augmentation_val = str(ckpt_policy) if ckpt_policy else ""
     else:
         sensing_pair_val = "dct_wave"
         augmentation_val = str(ckpt_policy) if ckpt_policy else ""
@@ -515,7 +527,7 @@ def main() -> int:
     audio_root  = args.audio_root.expanduser().resolve()
     output_dir  = args.output_dir.expanduser().resolve()
     checkpoint_dir = args.checkpoint_dir.expanduser().resolve()
-    force_retrain = bool(config.get("force_retrain", False))
+    force_retrain = True
 
     report(f"START module=representation.wave_barlow data_dir={data_dir} audio_root={audio_root} device={device}")
 
@@ -541,11 +553,7 @@ def main() -> int:
     for embedding_dim, ratio, policy in grid:
         source = get_source_name(mode, embedding_dim, ratio, policy, exclude_genres)
         ckpt_path = checkpoint_dir / f"{source}_{dataset_name}.pt"
-        if ckpt_path.exists() and not force_retrain:
-            log(f"skipping source={source} — checkpoint exists")
-            ckpt = ckpt_path
-        else:
-            ckpt = train_one(data_dir, audio_root, checkpoint_dir, mode, embedding_dim, ratio, policy, config, device)
+        ckpt = train_one(data_dir, audio_root, checkpoint_dir, mode, embedding_dim, ratio, policy, config, device)
         written_ckpts.append(ckpt)
         extract_embeddings(data_dir, audio_root, ckpt, output_dir, config, device)
 

@@ -8,6 +8,7 @@ from representation.audio import (
     WaveBarlowDataset,
     WaveABTDataset,
     HybridWaveDataset,
+    ChainedHybridWaveDataset,
     barlow_twins_loss,
     load_manifest,
     _load_waveform,
@@ -20,11 +21,13 @@ def run_wave_barlow(
     policy: str | None = None,
     method: str | None = None,
     embedding_dim: int = 256,
+    uniform: bool = False,
+    exclude_genres: list[str] | None = None,
     data_dir: str | Path = "preprocess/data/fma_small_mel",
     audio_root: str | Path = "preprocess/data",
     checkpoint_dir: str | Path = "representation/checkpoints",
     output_dir: str | Path = "representation/data",
-    force_retrain: bool = False,
+    force_retrain: bool = True,
     **config_overrides,
 ) -> Path:
     from compression.train_utils import load_config, resolve_device, set_seed
@@ -33,14 +36,14 @@ def run_wave_barlow(
         get_source_name, train_one, extract_embeddings,
     )
 
-    if ratio is not None and policy is None:
+    if method is not None:
+        mode = method
+    elif ratio is not None and policy is None:
         mode = "cs"
     elif policy is not None and ratio is None:
         mode = "traditional"
     elif ratio is not None and policy is not None:
         mode = "hybrid"
-    elif method is not None:
-        mode = method
     else:
         raise ValueError("provide ratio, policy, ratio+policy, or method")
 
@@ -56,8 +59,14 @@ def run_wave_barlow(
     checkpoint_dir = Path(checkpoint_dir).expanduser().resolve()
     output_dir = Path(output_dir).expanduser().resolve()
 
+    if exclude_genres is not None:
+        config["exclude_genres"] = list(exclude_genres)
     exclude_genres = list(config.get("exclude_genres", []))
     dataset_name = str(config.get("dataset", "fma_small"))
+    uniform = uniform if mode == "cs" else False
+
+    if mode not in ("cs", "traditional", "hybrid", "hybrid_chain"):
+        raise ValueError(f"unknown mode: {mode}")
 
     if method is not None and ratio is None and policy is None:
         if mode == "cs":
@@ -73,14 +82,11 @@ def run_wave_barlow(
 
     parquet_path = None
     for emb_dim, r, p in grid:
-        source = get_source_name(mode, emb_dim, r, p, exclude_genres)
+        source = get_source_name(mode, emb_dim, r, p, exclude_genres, uniform)
         ckpt_path = checkpoint_dir / f"{source}_{dataset_name}.pt"
-        if ckpt_path.exists() and not force_retrain:
-            print(f"[representation] checkpoint exists, skipping training: {ckpt_path}", flush=True)
-        else:
-            ckpt_path = train_one(
-                data_dir, audio_root, checkpoint_dir, mode, emb_dim, r, p, config, device
-            )
+        ckpt_path = train_one(
+            data_dir, audio_root, checkpoint_dir, mode, emb_dim, r, p, config, device, uniform
+        )
         parquet_path = extract_embeddings(data_dir, audio_root, ckpt_path, output_dir, config, device)
 
     return parquet_path
@@ -92,6 +98,7 @@ __all__ = [
     "WaveBarlowDataset",
     "WaveABTDataset",
     "HybridWaveDataset",
+    "ChainedHybridWaveDataset",
     "barlow_twins_loss",
     "load_manifest",
     "_load_waveform",

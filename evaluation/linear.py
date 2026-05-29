@@ -72,15 +72,15 @@ def run_linear_probe(
 
     best_C, best_val = None, -1.0
     for C in c_grid:
-        clf = LogisticRegression(C=C, max_iter=max_iter, tol=tol, solver="saga",
-                                 multi_class="multinomial", random_state=seed, n_jobs=4)
+        clf = LogisticRegression(C=C, max_iter=max_iter, tol=tol, solver="liblinear",
+                                 random_state=seed)
         clf.fit(x_tr_s, y_tr)
         val_f1 = float(f1_score(y_va, clf.predict(x_va_s), average="macro"))
         if val_f1 > best_val:
             best_val, best_C = val_f1, C
 
-    clf = LogisticRegression(C=best_C, max_iter=max_iter, tol=tol, solver="saga",
-                             multi_class="multinomial", random_state=seed, n_jobs=4)
+    clf = LogisticRegression(C=best_C, max_iter=max_iter, tol=tol, solver="liblinear",
+                             random_state=seed)
     clf.fit(x_tr_s, y_tr)
 
     val_pred = clf.predict(x_va_s)
@@ -122,6 +122,50 @@ def run_knn_probe(
     val_f1 = float(f1_score(y_va, clf.predict(x_va), average="macro"))
     test_f1 = float(f1_score(y_te, clf.predict(x_te), average="macro"))
     return {"val_f1": val_f1, "test_f1": test_f1, "best_k": best_k}
+
+
+def run_learning_curve(
+    df: pd.DataFrame,
+    fractions: list[float] | None = None,
+    exclude_genres: list[str] | None = None,
+    seed: int = 7,
+    c_grid: list[float] | None = None,
+    max_iter: int = 2000,
+    tol: float = 1e-4,
+) -> pd.DataFrame:
+    if fractions is None:
+        fractions = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00]
+    if c_grid is None:
+        c_grid = list(np.logspace(-4, 1, 12))
+
+    cols = _embedding_columns(df)
+    splits, _ = _split_xy(df, cols, exclude_genres)
+    x_tr, y_tr = splits["training"]
+    x_va, y_va = splits["validation"]
+
+    scaler = StandardScaler().fit(x_tr)
+    x_tr_s = scaler.transform(x_tr)
+    x_va_s = scaler.transform(x_va)
+
+    method = str(df["method"].iloc[0]) if "method" in df.columns else "unknown"
+    records = []
+    for frac in fractions:
+        n = max(len(np.unique(y_tr)), int(round(frac * len(x_tr_s))))
+        rng = np.random.default_rng(seed)
+        idx = rng.choice(len(x_tr_s), n, replace=False)
+
+        best_C, best_val = None, -1.0
+        for C in c_grid:
+            clf = LogisticRegression(C=C, max_iter=max_iter, tol=tol,
+                                     solver="liblinear", random_state=seed)
+            clf.fit(x_tr_s[idx], y_tr[idx])
+            val_f1 = float(f1_score(y_va, clf.predict(x_va_s), average="macro"))
+            if val_f1 > best_val:
+                best_val, best_C = val_f1, C
+
+        records.append({"method": method, "fraction": frac, "n_train": n, "val_f1": best_val})
+
+    return pd.DataFrame.from_records(records)
 
 
 def run_ratio_curve(

@@ -85,17 +85,15 @@ def _get_dct_probs(n: int) -> np.ndarray:
     return _DCT_PROBS_CACHE[n]
 
 
-def _dct_cs_view(y: np.ndarray, ratio: float, rng: np.random.Generator) -> torch.Tensor:
+def _dct_cs_view(y: np.ndarray, ratio: float, rng: np.random.Generator, uniform: bool = False) -> torch.Tensor:
     from scipy.fft import dct, idct
     n = len(y)
     m = max(1, int(round(n * ratio / 100.0)))
     coeffs = dct(y, norm="ortho", workers=1)
-    probs = _get_dct_probs(n)
-    idx = rng.choice(n, m, replace=False, p=probs)
+    idx = rng.choice(n, m, replace=False) if uniform else rng.choice(n, m, replace=False, p=_get_dct_probs(n))
     z = np.zeros(n, dtype=np.float32)
     z[idx] = coeffs[idx] * math.sqrt(n / m)
-    recon = idct(z, norm="ortho", workers=1).astype(np.float32)
-    return torch.from_numpy(recon)
+    return torch.from_numpy(idct(z, norm="ortho", workers=1).astype(np.float32))
 
 
 WAVE_AUGMENTATION_POLICIES = ("w1", "w2", "w3", "w4")
@@ -159,6 +157,7 @@ class WaveBarlowDataset(Dataset):
         audio_root: Path,
         seed: int = 0,
         exclude_genres: list[str] | None = None,
+        uniform: bool = False,
     ) -> None:
         self.data_dir = data_dir.resolve()
         manifest = load_manifest(self.data_dir, split)
@@ -170,6 +169,8 @@ class WaveBarlowDataset(Dataset):
         self.sample_rate = int(sample_rate)
         self.audio_root = audio_root.resolve()
         self.seed = seed
+        self.uniform = uniform
+        self.is_train = (split == "training")
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -177,13 +178,14 @@ class WaveBarlowDataset(Dataset):
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         row = self.rows[index]
         audio_path = self.audio_root / Path(row["audio_path"])
-        rng = np.random.default_rng([self.seed, index])
+        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
+        rng = np.random.default_rng([self.seed, index, epoch_seed])
         offset = float(rng.uniform(10.0, 25.0))
         y = _load_waveform(audio_path, self.sample_rate, offset, self.segment_seconds)
-        rng1 = np.random.default_rng([self.seed, index, 1])
-        rng2 = np.random.default_rng([self.seed, index, 2])
-        v1 = _dct_cs_view(y, self.ratio, rng1).unsqueeze(0)
-        v2 = _dct_cs_view(y, self.ratio, rng2).unsqueeze(0)
+        rng1 = np.random.default_rng([self.seed, index, epoch_seed, 1])
+        rng2 = np.random.default_rng([self.seed, index, epoch_seed, 2])
+        v1 = _dct_cs_view(y, self.ratio, rng1, self.uniform).unsqueeze(0)
+        v2 = _dct_cs_view(y, self.ratio, rng2, self.uniform).unsqueeze(0)
         return v1, v2
 
 
@@ -211,6 +213,7 @@ class WaveABTDataset(Dataset):
         self.audio_root = audio_root.resolve()
         self.augment_config = augment_config
         self.seed = seed
+        self.is_train = (split == "training")
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -218,11 +221,12 @@ class WaveABTDataset(Dataset):
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         row = self.rows[index]
         audio_path = self.audio_root / Path(row["audio_path"])
-        rng = np.random.default_rng([self.seed, index])
+        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
+        rng = np.random.default_rng([self.seed, index, epoch_seed])
         offset = float(rng.uniform(10.0, 25.0))
         y = _load_waveform(audio_path, self.sample_rate, offset, self.segment_seconds)
-        rng1 = np.random.default_rng([self.seed, index, 1])
-        rng2 = np.random.default_rng([self.seed, index, 2])
+        rng1 = np.random.default_rng([self.seed, index, epoch_seed, 1])
+        rng2 = np.random.default_rng([self.seed, index, epoch_seed, 2])
         v1 = torch.from_numpy(apply_wave_policy(y, self.policy, self.augment_config, rng1)).unsqueeze(0)
         v2 = torch.from_numpy(apply_wave_policy(y, self.policy, self.augment_config, rng2)).unsqueeze(0)
         return v1, v2
@@ -254,6 +258,7 @@ class HybridWaveDataset(Dataset):
         self.audio_root = audio_root.resolve()
         self.augment_config = augment_config
         self.seed = seed
+        self.is_train = (split == "training")
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -261,13 +266,60 @@ class HybridWaveDataset(Dataset):
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         row = self.rows[index]
         audio_path = self.audio_root / Path(row["audio_path"])
-        rng = np.random.default_rng([self.seed, index])
+        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
+        rng = np.random.default_rng([self.seed, index, epoch_seed])
         offset = float(rng.uniform(10.0, 25.0))
         y = _load_waveform(audio_path, self.sample_rate, offset, self.segment_seconds)
-        rng1 = np.random.default_rng([self.seed, index, 1])
-        rng2 = np.random.default_rng([self.seed, index, 2])
-        v1 = _dct_cs_view(y, self.ratio, rng1).unsqueeze(0)
+        rng1 = np.random.default_rng([self.seed, index, epoch_seed, 1])
+        rng2 = np.random.default_rng([self.seed, index, epoch_seed, 2])
+        v1 = _dct_cs_view(y, self.ratio, rng1, getattr(self, "uniform", False)).unsqueeze(0)
         v2 = torch.from_numpy(apply_wave_policy(y, self.policy, self.augment_config, rng2)).unsqueeze(0)
+        return v1, v2
+
+
+class ChainedHybridWaveDataset(Dataset):
+    def __init__(
+        self,
+        data_dir: Path,
+        split: str,
+        ratio: int,
+        policy: str,
+        segment_seconds: float,
+        sample_rate: int,
+        audio_root: Path,
+        augment_config: dict,
+        seed: int = 0,
+        exclude_genres: list[str] | None = None,
+    ) -> None:
+        self.data_dir = data_dir.resolve()
+        manifest = load_manifest(self.data_dir, split)
+        if exclude_genres:
+            manifest = manifest[~manifest["genre_top"].isin(exclude_genres)]
+        self.rows = manifest.to_dict("records")
+        self.ratio = int(ratio)
+        self.policy = str(policy)
+        self.segment_seconds = float(segment_seconds)
+        self.sample_rate = int(sample_rate)
+        self.audio_root = audio_root.resolve()
+        self.augment_config = augment_config
+        self.seed = seed
+        self.is_train = (split == "training")
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        row = self.rows[index]
+        audio_path = self.audio_root / Path(row["audio_path"])
+        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
+        rng = np.random.default_rng([self.seed, index, epoch_seed])
+        offset = float(rng.uniform(10.0, 25.0))
+        y = _load_waveform(audio_path, self.sample_rate, offset, self.segment_seconds)
+        rng1 = np.random.default_rng([self.seed, index, epoch_seed, 1])
+        rng2 = np.random.default_rng([self.seed, index, epoch_seed, 2])
+        v1 = torch.from_numpy(apply_wave_policy(y, self.policy, self.augment_config, rng1)).unsqueeze(0)
+        y2 = apply_wave_policy(y, self.policy, self.augment_config, rng2)
+        v2 = _dct_cs_view(y2, self.ratio, rng2).unsqueeze(0)
         return v1, v2
 
 
@@ -297,8 +349,6 @@ class WaveSTFTEncoder(nn.Module):
             mel_scale="htk",
         )
         self.register_buffer("mel_fb", fb)
-        self.register_buffer("mel_mean", torch.tensor(0.155090, dtype=torch.float32))
-        self.register_buffer("mel_std",  torch.tensor(0.232910, dtype=torch.float32))
         channels = [base_channels * (2 ** i) for i in range(int(n_blocks))]
         layers: list[nn.Module] = []
         in_ch = 1
@@ -331,11 +381,13 @@ class WaveSTFTEncoder(nn.Module):
         )
         mag = spec.abs()
         mel = torch.einsum("bft,fm->bmt", mag, self.mel_fb)
-        return torch.log1p(mel).unsqueeze(1)
+        mel = torch.log1p(mel).unsqueeze(1)
+        mean = mel.mean(dim=(2, 3), keepdim=True)
+        std  = mel.std(dim=(2, 3), keepdim=True).clamp_min(1e-6)
+        return (mel - mean) / std
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         spec = self._to_mel(x)
-        spec = (spec - self.mel_mean) / self.mel_std
         feat = self.features(spec)
         pooled = torch.cat([feat.mean(dim=(2, 3)), feat.amax(dim=(2, 3))], dim=1)
         return self.head(pooled)
