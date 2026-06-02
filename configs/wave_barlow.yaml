@@ -7,8 +7,8 @@ full_track_seconds: 30.0
 
 mode: cs
 embedding_dims: [256]
-ratios: [10, 20, 30, 40]
-policies: [w3, w4]
+ratios: [5, 10, 20, 40, 60]
+policies: [w2, w3, w4]
 exclude_genres: []
 
 n_fft: 1024
@@ -25,14 +25,13 @@ epochs: 300
 learning_rate: 1.2e-3
 weight_decay: 1.0e-4
 warmup_epochs: 20
-gl2_strip: 4
-gl5_threshold: 2.0
+gl2_strip: 5
+gl5_threshold: 3.0
 gl5_strip: 5
 gl5_grace: 30
 up_k_min: 5.0
 up_k_strip: 10
 barlow_lambda: 5.0e-5
-force_retrain: false
 
 wave_augment:
   wave_stretch_scale: [0.8, 1.2]
