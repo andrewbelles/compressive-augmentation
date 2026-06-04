@@ -125,6 +125,12 @@ def source_name(spec: RunSpec) -> str:
 
 
 def cosine_lr(epoch: int) -> float:
+    """
+    Compute the warmup plus cosine-decay learning rate for an epoch.
+
+    Assumptions:
+    - EPOCHS and WARMUP_EPOCHS define the full schedule length.
+    """
     if epoch < WARMUP_EPOCHS:
         return PEAK_LR * (epoch + 1) / max(WARMUP_EPOCHS, 1)
     progress = (epoch - WARMUP_EPOCHS) / max(EPOCHS - WARMUP_EPOCHS, 1)

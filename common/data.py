@@ -12,6 +12,12 @@ from common.ops import apply_wave_policy, _get_dct_probs
 
 
 def load_manifest(data_dir: Path, split: str) -> pd.DataFrame:
+    """
+    Load the CSV manifest for one dataset split.
+
+    Assumptions:
+    - Manifest filenames use the manifest_<split>.csv convention.
+    """
     manifest_path = data_dir / f"manifest_{split}.csv"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"missing manifest: {manifest_path}")
@@ -135,6 +141,12 @@ class WaveBarlowDataset(Dataset):
         srht: bool = False,
         preload: bool = False,
     ) -> None:
+        """
+        Initialize manifest rows, CS settings, and optional waveform cache.
+
+        Assumptions:
+        - exclude_genres is applied before any cached waveforms are loaded.
+        """
         manifest = load_manifest(data_dir.resolve(), split)
         if exclude_genres:
             manifest = manifest[~manifest["genre_top"].isin(exclude_genres)]
@@ -223,6 +235,12 @@ class WaveABTDataset(Dataset):
         exclude_genres: list[str] | None = None,
         preload: bool = False,
     ) -> None:
+        """
+        Initialize manifest rows, augmentation settings, and optional waveform cache.
+
+        Assumptions:
+        - exclude_genres is applied before any cached waveforms are loaded.
+        """
         manifest = load_manifest(data_dir.resolve(), split)
         if exclude_genres:
             manifest = manifest[~manifest["genre_top"].isin(exclude_genres)]
@@ -309,6 +327,12 @@ class SupConDataset(Dataset):
         exclude_genres: list[str] | None = None,
         preload: bool = False,
     ) -> None:
+        """
+        Initialize manifest rows, augmentation settings, labels, and optional cache.
+
+        Assumptions:
+        - genre_top is present for all supervised rows after filtering.
+        """
         manifest = load_manifest(data_dir.resolve(), split)
         if exclude_genres:
             manifest = manifest[~manifest["genre_top"].isin(exclude_genres)]

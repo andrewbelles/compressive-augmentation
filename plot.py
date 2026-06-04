@@ -60,6 +60,12 @@ TRAD_STYLES = {
 
 
 def _theme(ax: plt.Axes) -> None:
+    """
+    Apply the shared figure, axes, grid, label, and spine styling.
+
+    Assumptions:
+    - ax belongs to a Matplotlib figure that should use the paper theme.
+    """
     ax.figure.patch.set_facecolor(FIG_BG)
     ax.set_facecolor(AX_BG)
     ax.grid(True, color=GRID_C, linewidth=0.6, alpha=0.65)
@@ -72,6 +78,12 @@ def _theme(ax: plt.Axes) -> None:
 
 
 def _style_legend(ax: plt.Axes) -> None:
+    """
+    Apply shared legend styling if an axes already has a legend.
+
+    Assumptions:
+    - The legend object may be absent and should be left unchanged.
+    """
     leg = ax.get_legend()
     if leg is None:
         return
@@ -234,6 +246,12 @@ def plot_alignment_vs_f1(align: pd.DataFrame, linear: pd.DataFrame, out: Path) -
 
 
 def load_csv(path: Path, name: str) -> pd.DataFrame | None:
+    """
+    Load an analysis CSV and report whether it is available.
+
+    Assumptions:
+    - Missing inputs should be handled by downstream plot skipping.
+    """
     if not path.exists():
         print(f"  SKIP {name}: {path} not found")
         return None

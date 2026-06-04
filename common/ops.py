@@ -209,6 +209,12 @@ def apply_wave_policy(y: np.ndarray, policy: str, config: dict, rng: np.random.G
 
 
 def _mask(y: np.ndarray, n_masks: int, max_width: int, rng: np.random.Generator) -> np.ndarray:
+    """
+    Zero random contiguous spans in a waveform copy.
+
+    Assumptions:
+    - max_width is positive and no larger than the intended augmentation scale.
+    """
     y = y.copy()
     n = len(y)
     for _ in range(n_masks):

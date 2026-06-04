@@ -89,6 +89,12 @@ def load_batch(paths: list[Path], sr: int) -> tuple[torch.Tensor | None, list[Pa
 
 
 def log_normalize(mel: torch.Tensor) -> torch.Tensor:
+    """
+    Apply log compression and per-track z-score normalization to mel tensors.
+
+    Assumptions:
+    - The final two dimensions are mel frequency and time.
+    """
     mel = torch.log1p(mel)
     mean = mel.mean(dim=(-2, -1), keepdim=True)
     std  = mel.std(dim=(-2, -1), keepdim=True).clamp_min(EPS)
@@ -96,6 +102,12 @@ def log_normalize(mel: torch.Tensor) -> torch.Tensor:
 
 
 def find_tracks_csv(data_dir: Path) -> Path:
+    """
+    Locate FMA tracks.csv relative to an audio directory.
+
+    Assumptions:
+    - Metadata is either a sibling file or inside sibling fma_metadata.
+    """
     for candidate in [data_dir.parent / "tracks.csv",
                       data_dir.parent / "fma_metadata" / "tracks.csv"]:
         if candidate.is_file():

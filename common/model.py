@@ -6,6 +6,12 @@ EPS = 1e-12
 
 
 def off_diagonal(matrix: torch.Tensor) -> torch.Tensor:
+    """
+    Return the flattened off-diagonal entries of a square matrix.
+
+    Assumptions:
+    - The input matrix is square and small enough for a flattened view.
+    """
     n, m = matrix.shape
     if n != m:
         raise ValueError("expected square matrix")
@@ -49,6 +55,12 @@ class WaveSTFTEncoder(nn.Module):
         n_mels: int = 128,
         sample_rate: int = 22050,
     ) -> None:
+        """
+        Configure STFT buffers, mel filterbank, convolutional trunk, and head.
+
+        Assumptions:
+        - n_blocks is positive and determines the channel progression.
+        """
         super().__init__()
         self.n_fft      = int(n_fft)
         self.hop_length = int(hop_length)
@@ -92,6 +104,12 @@ class WaveSTFTEncoder(nn.Module):
         return (mel - mean) / std
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Encode waveforms into fixed-size embeddings.
+
+        Assumptions:
+        - x has the shape expected by to_mel.
+        """
         feat   = self.features(self.to_mel(x))
         pooled = torch.cat([feat.mean(dim=(2, 3)), feat.amax(dim=(2, 3))], dim=1)
         return self.head(pooled)
@@ -116,6 +134,12 @@ class WaveBarlowModel(nn.Module):
         n_mels: int = 128,
         sample_rate: int = 22050,
     ) -> None:
+        """
+        Configure the shared encoder and projection head for Barlow training.
+
+        Assumptions:
+        - projection_dim is the feature dimension used in the Barlow loss.
+        """
         super().__init__()
         self.encoder   = WaveSTFTEncoder(
             embedding_dim, 
@@ -135,6 +159,12 @@ class WaveBarlowModel(nn.Module):
     def forward(
         self, x1: torch.Tensor, x2: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Encode two views and return both embeddings and projector outputs.
+
+        Assumptions:
+        - x1 and x2 are paired batches with the same batch size.
+        """
         h1 = self.encoder(x1)
         h2 = self.encoder(x2)
         return h1, h2, self.projector(h1), self.projector(h2)
