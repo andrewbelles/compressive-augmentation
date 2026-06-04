@@ -55,6 +55,22 @@ Top-5 test F1-macro point estimates.
 | 5 | DCT-U r20 | 0.437 | 0.553 |
 | -- | Mel PCA-256 | 0.369 | 0.511 |
 
+## Figures 
+
+Test F1-Macro 95% Confidence Intervals versus Measurement Ratio m/N
+
+![Test F1-Macro 95% Confidence Intervals versus Measurement Ratio m/N](images/f1_vs_ratio.png)
+
+Nuisance Perturbation versus Test F1-macro and Between-View Alignment. SRHT at m/N = 1%
+is an outlier, hence x-axis is log-scale.
+
+![Nuisance Perturbation versus Test F1-macro and Between-View Alignment](images/nuisance_perturbation.png)
+
+Alignment and Uniformity against Test F1-macro. Points are labeled by ratio and denoted with
+random seed uncertainty for each x-axis value
+
+![Alignment and Uniformity against Test F1-macro](images/alignment_vs_f1.png)
+
 # Usage
 
 ## Setup
