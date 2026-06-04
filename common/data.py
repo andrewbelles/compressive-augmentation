@@ -8,7 +8,7 @@ import torch
 from scipy.fft import dct, idct
 from torch.utils.data import Dataset
 
-from common.ops import apply_wave_policy, _get_dct_probs, _mask
+from common.ops import apply_wave_policy, _get_dct_probs 
 
 
 def load_manifest(data_dir: Path, split: str) -> pd.DataFrame:
@@ -18,7 +18,12 @@ def load_manifest(data_dir: Path, split: str) -> pd.DataFrame:
     return pd.read_csv(manifest_path)
 
 
-def load_waveform(audio_path: Path, sr: int, offset_sec: float, duration_sec: float) -> np.ndarray:
+def load_waveform(
+    audio_path: Path, 
+    sr: int, 
+    offset_sec: float, 
+    duration_sec: float
+) -> np.ndarray:
     npy_path = audio_path.with_suffix(".npy")
     if npy_path.exists():
         y       = np.load(npy_path, mmap_mode="r")
@@ -75,11 +80,17 @@ def srht_cs_view(y: np.ndarray, ratio: float, rng: np.random.Generator) -> torch
     return torch.from_numpy((z[:n] * signs[:n]).astype(np.float32))
 
 
-def dct_cs_view(y: np.ndarray, ratio: float, rng: np.random.Generator, uniform: bool = False) -> torch.Tensor:
+def dct_cs_view(
+    y: np.ndarray, 
+    ratio: float, 
+    rng: np.random.Generator, 
+    uniform: bool = False
+) -> torch.Tensor:
     n      = len(y)
     m      = max(1, int(round(n * ratio / 100.0)))
     coeffs = dct(y, norm="ortho", workers=1)
-    idx    = rng.choice(n, m, replace=False) if uniform else rng.choice(n, m, replace=False, p=_get_dct_probs(n))
+    idx    = (rng.choice(n, m, replace=False) 
+              if uniform else rng.choice(n, m, replace=False, p=_get_dct_probs(n)))
     z      = np.zeros(n, dtype=np.float32)
     z[idx] = coeffs[idx] * math.sqrt(n / m)
     return torch.from_numpy(idct(z, norm="ortho", workers=1).astype(np.float32))
@@ -216,8 +227,12 @@ class WaveABTDataset(Dataset):
             return (y_t,)
         rng1 = np.random.default_rng([self.seed, index, epoch_seed, 1])
         rng2 = np.random.default_rng([self.seed, index, epoch_seed, 2])
-        v1 = torch.from_numpy(apply_wave_policy(y, self.policy, self.augment_config, rng1)).unsqueeze(0)
-        v2 = torch.from_numpy(apply_wave_policy(y, self.policy, self.augment_config, rng2)).unsqueeze(0)
+        v1 = torch.from_numpy(
+            apply_wave_policy(y, self.policy, self.augment_config, rng1)
+        ).unsqueeze(0)
+        v2 = torch.from_numpy(
+            apply_wave_policy(y, self.policy, self.augment_config, rng2)
+        ).unsqueeze(0)
         return v1, v2
 
 
@@ -283,6 +298,10 @@ class SupConDataset(Dataset):
             return torch.from_numpy(y), lbl
         rng1 = np.random.default_rng([self.seed, index, epoch_seed, 1])
         rng2 = np.random.default_rng([self.seed, index, epoch_seed, 2])
-        v1   = torch.from_numpy(apply_wave_policy(y, "w3", self.augment_config, rng1)).unsqueeze(0)
-        v2   = torch.from_numpy(apply_wave_policy(y, "w3", self.augment_config, rng2)).unsqueeze(0)
+        v1   = torch.from_numpy(
+            apply_wave_policy(y, "w3", self.augment_config, rng1)
+        ).unsqueeze(0)
+        v2   = torch.from_numpy(
+            apply_wave_policy(y, "w3", self.augment_config, rng2)
+        ).unsqueeze(0)
         return v1, v2, lbl

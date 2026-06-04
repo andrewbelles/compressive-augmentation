@@ -20,6 +20,8 @@ import torchaudio
 from PIL import Image
 
 
+EPS = 1e-12 
+
 @dataclass(frozen=True)
 class MelConfig:
     sample_rate: int   = 22_050
@@ -71,7 +73,7 @@ def load_batch(paths: list[Path], sr: int) -> tuple[torch.Tensor | None, list[Pa
 def log_normalize(mel: torch.Tensor) -> torch.Tensor:
     mel = torch.log1p(mel)
     mean = mel.mean(dim=(-2, -1), keepdim=True)
-    std  = mel.std(dim=(-2, -1), keepdim=True).clamp_min(1e-6)
+    std  = mel.std(dim=(-2, -1), keepdim=True).clamp_min(EPS)
     return (mel - mean) / std
 
 

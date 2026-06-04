@@ -8,6 +8,8 @@ from scipy.signal import resample as scipy_resample
 
 _DCT_PROBS_CACHE: dict[int, np.ndarray] = {}
 
+EPS = 1e-12
+
 
 def _get_dct_probs(n: int) -> np.ndarray:
     if n not in _DCT_PROBS_CACHE:
@@ -70,7 +72,9 @@ def gpu_dct_cs_view_batch(
         scores = torch.rand(B, T, device=x.device, generator=gen)
     else:
         log_p  = -0.5 * torch.arange(1, T + 1, device=x.device, dtype=torch.float32).log()
-        gumbel = -torch.log(-torch.log(torch.rand(B, T, device=x.device, generator=gen).clamp_min(1e-20)))
+        gumbel = -torch.log(
+            -torch.log(torch.rand(B, T, device=x.device, generator=gen
+        ).clamp_min(EPS)))
         scores = log_p.unsqueeze(0) + gumbel
     _, idx = scores.topk(m, dim=-1)
     mask   = torch.zeros(B, T, device=x.device)

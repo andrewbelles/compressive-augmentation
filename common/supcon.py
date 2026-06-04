@@ -11,6 +11,7 @@ from common.model import WaveSTFTEncoder
 
 SPLITS = ("training", "validation", "test")
 
+EPS = 1e-12
 
 def supcon_loss(feats: torch.Tensor, labels: torch.Tensor, temp: float = 0.07) -> torch.Tensor:
     feats  = F.normalize(feats, dim=1)
@@ -21,7 +22,7 @@ def supcon_loss(feats: torch.Tensor, labels: torch.Tensor, temp: float = 0.07) -
     mask.fill_diagonal_(0)
     pos_sum = mask.sum(1).clamp_min(1)
     exp_sim = torch.exp(sim) * (1 - torch.eye(n, device=feats.device))
-    log_prob = sim - torch.log(exp_sim.sum(1, keepdim=True).clamp_min(1e-9))
+    log_prob = sim - torch.log(exp_sim.sum(1, keepdim=True).clamp_min(EPS))
     return (-(mask * log_prob).sum(1) / pos_sum).mean()
 
 

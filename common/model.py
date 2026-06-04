@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torchaudio.functional as AF
+
+EPS = 1e-12
 
 
 def off_diagonal(matrix: torch.Tensor) -> torch.Tensor:
@@ -17,8 +18,8 @@ def barlow_twins_loss(
     lambd: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     batch_size = left.size(0)
-    left  = (left  - left.mean(dim=0))  / left.std(dim=0).clamp_min(1e-6)
-    right = (right - right.mean(dim=0)) / right.std(dim=0).clamp_min(1e-6)
+    left  = (left  - left.mean(dim=0))  / left.std(dim=0).clamp_min(EPS)
+    right = (right - right.mean(dim=0)) / right.std(dim=0).clamp_min(EPS)
     correlation = left.T @ right / batch_size
     on_diag  = torch.diagonal(correlation).add_(-1.0).pow_(2).sum()
     off_diag = off_diagonal(correlation).pow_(2).sum()
@@ -69,7 +70,7 @@ class WaveSTFTEncoder(nn.Module):
         mel  = torch.einsum("bft,fm->bmt", spec.abs(), self.mel_fb)
         mel  = torch.log1p(mel).unsqueeze(1)
         mean = mel.mean(dim=(2, 3), keepdim=True)
-        std  = mel.std(dim=(2, 3), keepdim=True).clamp_min(1e-6)
+        std  = mel.std(dim=(2, 3), keepdim=True).clamp_min(EPS)
         return (mel - mean) / std
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -92,7 +93,15 @@ class WaveBarlowModel(nn.Module):
         sample_rate: int = 22050,
     ) -> None:
         super().__init__()
-        self.encoder   = WaveSTFTEncoder(embedding_dim, base_channels, n_fft, hop_length, n_blocks, n_mels, sample_rate)
+        self.encoder   = WaveSTFTEncoder(
+            embedding_dim, 
+            base_channels, 
+            n_fft, 
+            hop_length, 
+            n_blocks, 
+            n_mels, 
+            sample_rate
+        )
         self.projector = nn.Sequential(
             nn.Linear(embedding_dim, projection_hidden_dim, bias=False),
             nn.BatchNorm1d(projection_hidden_dim), nn.ReLU(inplace=True),

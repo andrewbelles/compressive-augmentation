@@ -43,11 +43,12 @@ from common.ops import gpu_dct_cs_view_batch, gpu_srht_batch, gpu_wave_policy_ba
 
 
 SPLITS         = ("training", "validation", "test")
-C_GRID        = list(np.logspace(-4, 2, 15).tolist())
+C_GRID         = list(np.logspace(-4, 2, 15).tolist())
 N_BOOT         = 2000
 BOOT_SEED      = 42
 MEL_PCA_DIM    = 256
-TRAD_FAMILIES = {"w2", "w3", "w4"}
+EPS            = 1e-12
+TRAD_FAMILIES  = {"w2", "w3", "w4"}
 
 
 def emb_cols(df: pd.DataFrame) -> list[str]:
@@ -473,7 +474,7 @@ def uniformity_gpu(Z: torch.Tensor, t: float = 2.0, max_n: int = 2048) -> float:
         Z   = Z[idx]
     sq   = torch.cdist(Z, Z).pow(2)
     mask = torch.triu(torch.ones(len(Z), len(Z), device=Z.device, dtype=torch.bool), diagonal=1)
-    return float(torch.log(torch.exp(-t * sq[mask]).mean() + 1e-12).item())
+    return float(torch.log(torch.exp(-t * sq[mask]).mean() + EPS).item())
 
 
 def load_encoder(ckpt_path: Path, device: torch.device):

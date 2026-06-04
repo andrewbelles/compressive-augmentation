@@ -73,10 +73,13 @@ def extract_embeddings(
         for _, row in manifest.iterrows():
             audio_path = audio_root / Path(row["audio_path"])
             try:
-                y_full = load_waveform(audio_path, sr, 0.0, float(config.get("full_track_seconds", 30.0)))
+                y_full = load_waveform(
+                    audio_path, sr, 0.0, float(config.get("full_track_seconds", 30.0))
+                )
             except Exception:
                 continue
-            crops = [y_full[s : s + seg_samples] for s in range(0, full_samples - seg_samples + 1, seg_samples)]
+            crops = [y_full[s : s + seg_samples] 
+                     for s in range(0, full_samples - seg_samples + 1, seg_samples)]
             if not crops:
                 crops = [y_full[:seg_samples]]
             batch = torch.from_numpy(np.stack(crops)).unsqueeze(1).to(device)
