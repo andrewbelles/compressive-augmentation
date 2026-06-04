@@ -8,26 +8,14 @@ shell.nix
 
 __pycache__/
 
+data/*
+checkpoints/* 
+!/data/.gitkeep
+!/checkpoints/.gitkeep
+
 !/preprocess/data/.gitkeep
 /preprocess/data/*
 !/preprocess/images/.gitkeep
-
-/compression/data/*
-!/compression/data/.gitkeep
-/compression/images/*
-!/compression/images/.gitkeep
-
-/representation/checkpoints/*
-!/representation/checkpoints/.gitkeep
-/representation/data/*
-!/representation/data/.gitkeep
-/representation/images/*
-!/representation/images/.gitkeep
-
-!/evaluation/data/.gitkeep
-/evaluation/data/*
-!/evaluation/images/.gitkeep
-/evaluation/images/*
 
 logs/
 

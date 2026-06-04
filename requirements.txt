@@ -1,16 +1,8 @@
 numpy
 scipy
 pandas
+pyarrow
 scikit-learn
 matplotlib
-seaborn
-pyyaml
-pyarrow
-pillow
-umap-learn
-jupyter
-notebook
-ipykernel
 torch
 torchaudio
-torchvision

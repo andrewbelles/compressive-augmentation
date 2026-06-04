@@ -9,4 +9,4 @@ requires-python = ">=3.12"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["compression*", "preprocess*", "representation*", "evaluation*"]
+include = ["common*", "preprocess*"]
