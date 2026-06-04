@@ -200,7 +200,7 @@ def run_linear_analysis(
     exclude_genres=None,
     mel_data_dir: Optional[Path] = None,
 ) -> tuple[pd.DataFrame, dict[str, list[dict]]]:
-    print("\n=== Linear probe analysis ===", flush=True)
+    print("\nLinear probe analysis", flush=True)
 
     groups: dict[str, dict] = {}
     for method, group in df.groupby("method"):
@@ -264,7 +264,7 @@ def run_linear_analysis(
             f"  {row['label']:30s} n={n}  "
             f"val={row['val_f1_mean']:.4f} [{ref['val_ci_lo']:.4f},{ref['val_ci_hi']:.4f}]  "
             f"test={row['test_f1_mean']:.4f} [{ref['test_ci_lo']:.4f},{ref['test_ci_hi']:.4f}]  "
-            f"±seed={test_seed_ci:.4f}",
+            f"+/-seed={test_seed_ci:.4f}",
             flush=True,
         )
 
@@ -323,7 +323,7 @@ def run_comparison_ci(
     linear_df: pd.DataFrame,
     ref_families: set[str] = TRAD_FAMILIES,
 ) -> pd.DataFrame:
-    print("\n=== Comparison CIs vs best traditional baseline ===", flush=True)
+    print("\n Comparison CIs vs best traditional baseline ", flush=True)
 
     trad_rows = linear_df[linear_df["family"].isin(ref_families)]
     if trad_rows.empty:
@@ -402,7 +402,7 @@ def load_embeddings_any_seed(df: pd.DataFrame, base_name: str, sp: str) -> tuple
 
 
 def run_perturbation_analysis(df: pd.DataFrame, ref_method: str, split: str = "test") -> pd.DataFrame:
-    print(f"\n=== Perturbation analysis (ref={ref_method}, split={split}) ===", flush=True)
+    print(f"\nPerturbation analysis (ref={ref_method}, split={split})", flush=True)
 
     X_ref_tr, y_ref_tr = load_embeddings_any_seed(df, ref_method, "training")
     X_ref_te, _        = load_embeddings_any_seed(df, ref_method, split)
@@ -529,7 +529,7 @@ def run_alignment_analysis(
     device: Optional[torch.device] = None,
     n_aug_epochs: int = 4,
 ) -> pd.DataFrame:
-    print(f"\n=== Alignment analysis (split={split}) ===", flush=True)
+    print(f"\nAlignment analysis (split={split})", flush=True)
 
     has_gpu = (checkpoint_dir is not None and audio_root is not None and checkpoint_dir.is_dir())
     if device is None:
@@ -638,7 +638,7 @@ def run_alignment_analysis(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Post-training analysis for compressive SSL.")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--parquet",        type=Path, default=Path("data/wave_barlow_fma_small.parquet"))
     parser.add_argument("--output-dir",     type=Path, default=Path("analysis"))
     parser.add_argument("--ref-method",     type=str,  default="supcon_w3_d256_nopop")

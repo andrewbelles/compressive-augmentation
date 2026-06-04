@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# plot.py  Andrew Belles  2026
+# plot.py  Andrew Belles  June 2026
 #
 # Generates the three paper figures from analysis CSVs produced by analyze.py.
 #
@@ -9,7 +9,7 @@
 #   Figure 4: Alignment and Uniformity vs Test F1-macro
 #
 # Usage:
-#   python plot.py --analysis-dir analysis/ --output-dir data/images/
+#   python plot.py --analysis-dir analysis/ --output-dir images/
 #
 
 import argparse
@@ -225,7 +225,7 @@ def load_csv(path: Path, name: str) -> pd.DataFrame | None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate the three paper figures from analysis CSVs.")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--analysis-dir", type=Path, default=Path("analysis"),
                         help="Directory containing CSVs from analyze.py")
     parser.add_argument("--output-dir",   type=Path, default=Path("data/images"),

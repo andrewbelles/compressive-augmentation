@@ -2,12 +2,14 @@
 #
 # train.py  Andrew Belles  June 2026
 #
-# Full-sweep training script for the compressive SSL project.
-# Trains all CS, traditional, and SupCon encoders on FMA Small.
+# Full-sweep training script: 
+# - Trains all CS, traditional, and SupCon encoders on FMA Small.
 #
 # Usage (two parallel processes, one per H200):
-#   CUDA_VISIBLE_DEVICES=0 python train.py --half 0 --scratch-dir /dartfs-hpc/scratch/$USER/spiky &
-#   CUDA_VISIBLE_DEVICES=1 python train.py --half 1 --scratch-dir /dartfs-hpc/scratch/$USER/spiky &
+#   CUDA_VISIBLE_DEVICES=0 python train.py --half 0 \
+#       --scratch-dir /dartfs-hpc/scratch/$USER/compressive-augmentation &
+#   CUDA_VISIBLE_DEVICES=1 python train.py --half 1 \
+#       --scratch-dir /dartfs-hpc/scratch/$USER/compressive-augmentation &
 #   wait
 #
 
@@ -72,8 +74,8 @@ class RunSpec:
     seed:    int
     ratio:   Optional[float] = None
     policy:  Optional[str]   = None
-    uniform: bool             = False
-    srht:    bool             = False
+    uniform: bool            = False
+    srht:    bool            = False
 
 
 def build_run_list() -> list[RunSpec]:
@@ -425,7 +427,7 @@ def main() -> None:
     parser.add_argument("--audio-root",  type=Path, default=Path("preprocess/data"))
     parser.add_argument("--num-workers", type=int,  default=8)
     parser.add_argument("--kinds",       nargs="+", default=None,
-                        help="Only run these kinds (e.g. cs_biased cs_uniform cs_srht)")
+                        help="e.g. cs_biased cs_uniform cs_srht")
     args = parser.parse_args()
 
     device         = torch.device("cuda" if torch.cuda.is_available() else "cpu")

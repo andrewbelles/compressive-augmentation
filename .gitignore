@@ -10,8 +10,11 @@ __pycache__/
 
 data/*
 checkpoints/* 
+analysis/*
+
 !/data/.gitkeep
 !/checkpoints/.gitkeep
+!/analysis/.gitkeep
 
 !/preprocess/data/.gitkeep
 /preprocess/data/*
