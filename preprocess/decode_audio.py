@@ -17,6 +17,12 @@ DEFAULT_SAMPLE_RATE = 22050
 
 
 def decode_mp3(mp3_path: Path, sr: int) -> np.ndarray:
+    """
+    Decode and peak-normalize one mp3 to a float32 mono waveform.
+
+    Assumptions:
+    - ffmpeg is installed and produces f32le samples on stdout.
+    """
     cmd = ["ffmpeg", "-y", "-i", str(mp3_path), "-ar", str(sr), "-ac", "1", "-f", "f32le", "-"]
     result = subprocess.run(cmd, capture_output=True)
     y = np.frombuffer(result.stdout, dtype=np.float32)
@@ -29,6 +35,12 @@ def decode_mp3(mp3_path: Path, sr: int) -> np.ndarray:
 
 
 def main() -> int:
+    """
+    CLI entry point for writing cached .npy waveforms beside mp3 files.
+
+    Assumptions:
+    - Existing .npy files are valid caches and can be skipped.
+    """
     parser = argparse.ArgumentParser(description="Pre-decode mp3 files to float32 .npy waveforms.")
     parser.add_argument("-d", "--audio-dir", type=Path, default=DEFAULT_AUDIO_DIR)
     parser.add_argument("--sr", type=int, default=DEFAULT_SAMPLE_RATE)

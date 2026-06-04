@@ -11,6 +11,12 @@ from preprocess.mel import MelConfig, convert_directory
 
 
 def run_decode_audio(audio_dir: str | Path, sr: int = 22050) -> None:
+    """
+    Decode all mp3 files under a directory into adjacent .npy caches.
+
+    Assumptions:
+    - Existing .npy files are valid caches and can be skipped.
+    """
     audio_dir = Path(audio_dir).expanduser().resolve()
     if not audio_dir.is_dir():
         raise NotADirectoryError(f"directory not found: {audio_dir}")
@@ -31,6 +37,12 @@ def run_decode_audio(audio_dir: str | Path, sr: int = 22050) -> None:
 
 
 def run_audio_unzip(zip_path: str | Path, data_dir: str | Path) -> None:
+    """
+    Extract an FMA audio zip unless decoded audio and mel data already exist.
+
+    Assumptions:
+    - The zip expands into the parent directory of data_dir.
+    """
     zip_path = Path(zip_path).expanduser().resolve()
     data_dir = Path(data_dir).expanduser().resolve()
     mel_dir  = data_dir.parent / f"{data_dir.name}_mel"
@@ -47,6 +59,12 @@ def run_audio_unzip(zip_path: str | Path, data_dir: str | Path) -> None:
 
 
 def run_mel(data_dir: str | Path) -> Path:
+    """
+    Convert an audio directory to mel tensors through the package API.
+
+    Assumptions:
+    - Metadata required for manifests is colocated as expected by convert_directory.
+    """
     data_dir = Path(data_dir).expanduser().resolve()
     print(f"[preprocess] mel: converting {data_dir}", flush=True)
     out, processed, skipped, _ = convert_directory(data_dir, MelConfig())

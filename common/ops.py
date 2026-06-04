@@ -12,6 +12,11 @@ EPS = 1e-12
 
 
 def _get_dct_probs(n: int) -> np.ndarray:
+    """
+    Return cached biased DCT sampling probabilities for a signal length.
+
+    - Lower DCT frequencies should be sampled with higher probability.
+    """
     if n not in _DCT_PROBS_CACHE:
         probs = 1.0 / np.sqrt(np.arange(1, n + 1, dtype=np.float32))
         probs /= probs.sum()
@@ -20,6 +25,12 @@ def _get_dct_probs(n: int) -> np.ndarray:
 
 
 def _gpu_dct_batch(x: torch.Tensor) -> torch.Tensor:
+    """
+    Compute an orthonormal DCT-II for a batch using FFT primitives.
+
+    Assumptions:
+    - Input is shaped as batch by time and may be safely promoted to float32.
+    """
     B, T = x.shape
     v    = torch.cat([x, x.flip(-1)], dim=-1)
     V    = torch.fft.rfft(v.float(), n=2 * T)[:, :T]
@@ -32,6 +43,12 @@ def _gpu_dct_batch(x: torch.Tensor) -> torch.Tensor:
 
 
 def _gpu_idct_batch(C: torch.Tensor) -> torch.Tensor:
+    """
+    Invert the batched orthonormal DCT representation used by _gpu_dct_batch.
+
+    Assumptions:
+    - Coefficients follow the same normalization as _gpu_dct_batch.
+    """
     B, T = C.shape
     k    = torch.arange(T, device=C.device, dtype=torch.float32)
     C2   = C.float().clone()
@@ -46,6 +63,12 @@ def _gpu_idct_batch(C: torch.Tensor) -> torch.Tensor:
 
 
 def _gpu_wht_batch(x: torch.Tensor) -> torch.Tensor:
+    """
+    Apply Walsh-Hadamard transform over batched vectors.
+
+    Assumptions:
+    - The time dimension is already padded to a power of two.
+    """
     B, p2 = x.shape
     h = 1
     while h < p2:
@@ -65,6 +88,12 @@ def gpu_dct_cs_view_batch(
     uniform: bool = False,
     energy_rescale: bool = True,
 ) -> torch.Tensor:
+    """
+    Generate batched DCT compressive-sensing reconstruction views on GPU.
+
+    Assumptions:
+    - ratio is a percent and gen is seeded by the caller for reproducible views.
+    """
     B, T = x.shape
     m    = max(1, int(round(T * ratio / 100.0)))
     C    = _gpu_dct_batch(x)
@@ -88,6 +117,12 @@ def gpu_srht_batch(
     gen: torch.Generator,
     energy_rescale: bool = True,
 ) -> torch.Tensor:
+    """
+    Generate batched SRHT compressive-sensing reconstruction views on GPU.
+
+    Assumptions:
+    - Input waveforms are fixed length, padding is internal and removed on return.
+    """
     B, T  = x.shape
     p2    = 1 << math.ceil(math.log2(max(T, 2)))
     m     = max(1, int(round(T * ratio / 100.0)))
@@ -108,6 +143,12 @@ def gpu_wave_policy_batch(
     config: dict,
     gen: torch.Generator,
 ) -> torch.Tensor:
+    """
+    Apply a waveform augmentation policy to a batch on GPU.
+
+    Assumptions:
+    - policy uses the w2/w3/w4 semantics and config provides all required keys.
+    """
     B, T   = x.shape
     lo, hi = float(config["wave_stretch_scale"][0]), float(config["wave_stretch_scale"][1])
     scale  = float(torch.empty(1, device=x.device).uniform_(lo, hi, generator=gen))
@@ -140,6 +181,12 @@ def gpu_wave_policy_batch(
 
 
 def apply_wave_policy(y: np.ndarray, policy: str, config: dict, rng: np.random.Generator) -> np.ndarray:
+    """
+    Apply the numpy/scipy version of the waveform augmentation policy.
+
+    Assumptions:
+    - Used for CPU dataset paths; GPU training should use gpu_wave_policy_batch.
+    """
     scale   = float(rng.uniform(float(config["wave_stretch_scale"][0]), float(config["wave_stretch_scale"][1])))
     n       = len(y)
     n_res   = max(1, int(round(n * scale)))

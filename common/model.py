@@ -17,6 +17,12 @@ def barlow_twins_loss(
     right: torch.Tensor,
     lambd: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute the Barlow Twins decorrelation objective and its components.
+
+    Assumptions:
+    - Inputs are paired projector outputs with matching batch and feature dimensions.
+    """
     batch_size = left.size(0)
     left  = (left  - left.mean(dim=0))  / left.std(dim=0).clamp_min(EPS)
     right = (right - right.mean(dim=0)) / right.std(dim=0).clamp_min(EPS)
@@ -27,6 +33,12 @@ def barlow_twins_loss(
 
 
 class WaveSTFTEncoder(nn.Module):
+    """
+    STFT-to-mel convolutional encoder for fixed-length waveform segments.
+
+    Assumptions:
+    - Input tensors are shaped batch by channel by time at the configured sample rate.
+    """
     def __init__(
         self,
         embedding_dim: int,
@@ -64,6 +76,12 @@ class WaveSTFTEncoder(nn.Module):
         )
 
     def to_mel(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Convert waveform batches to normalized log-mel tensors.
+
+        Assumptions:
+        - The registered mel filterbank and Hann window are on the same device as x.
+        """
         y    = x.squeeze(1)
         spec = torch.stft(y, n_fft=self.n_fft, hop_length=self.hop_length,
                           win_length=self.n_fft, window=self.window, return_complex=True)
@@ -80,6 +98,12 @@ class WaveSTFTEncoder(nn.Module):
 
 
 class WaveBarlowModel(nn.Module):
+    """
+    Wrap the waveform encoder with a Barlow Twins projection head.
+
+    Assumptions:
+    - The encoder output dimension matches the projector input dimension.
+    """
     def __init__(
         self,
         embedding_dim: int,

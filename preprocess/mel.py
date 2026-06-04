@@ -24,6 +24,12 @@ EPS = 1e-12
 
 @dataclass(frozen=True)
 class MelConfig:
+    """
+    Configuration for GPU batched mel-spectrogram conversion.
+
+    Assumptions:
+    - Values match the training encoder's STFT and mel settings.
+    """
     sample_rate: int   = 22_050
     n_mels: int        = 128
     n_fft: int         = 1_024
@@ -41,6 +47,12 @@ def resolve_device(device: str) -> torch.device:
 
 
 def load_audio(audio_path: Path, sr: int) -> torch.Tensor:
+    """
+    Decode one audio file to mono float32 samples with ffmpeg.
+
+    Assumptions:
+    - ffmpeg is installed and can decode the input file format.
+    """
     cmd = ["ffmpeg", "-v", "error", "-i", str(audio_path),
            "-f", "f32le", "-acodec", "pcm_f32le", "-ac", "1", "-ar", str(sr), "pipe:1"]
     result = subprocess.run(cmd, capture_output=True)
@@ -54,6 +66,12 @@ def load_audio(audio_path: Path, sr: int) -> torch.Tensor:
 
 
 def load_batch(paths: list[Path], sr: int) -> tuple[torch.Tensor | None, list[Path], list[int], list[tuple]]:
+    """
+    Decode and pad a batch of audio files for mel conversion.
+
+    Assumptions:
+    - Failed decodes should be reported and skipped rather than aborting the batch.
+    """
     waveforms, lengths, valid_paths, skipped = [], [], [], []
     for p in paths:
         try:
@@ -86,6 +104,12 @@ def find_tracks_csv(data_dir: Path) -> Path:
 
 
 def load_track_metadata(tracks_csv: Path) -> dict[int, dict]:
+    """
+    Read FMA metadata needed for manifests from the two-row-header CSV.
+
+    Assumptions:
+    - tracks.csv uses the original FMA multi-header column layout.
+    """
     result = {}
     with tracks_csv.open("r", encoding="utf-8", newline="") as fh:
         reader = csv.reader(fh)
@@ -115,6 +139,12 @@ def load_track_metadata(tracks_csv: Path) -> dict[int, dict]:
 
 
 def write_manifests(data_dir: Path, output_dir: Path) -> dict[str, Path]:
+    """
+    Write split manifests that connect track ids, audio paths, and mel tensors.
+
+    Assumptions:
+    - Mel tensor filenames are numeric FMA track ids.
+    """
     tracks_csv = find_tracks_csv(data_dir)
     metadata   = load_track_metadata(tracks_csv)
     fields = ["track_id", "split", "subset", "genre_top", "duration", "title", "audio_path", "mel_path"]
@@ -151,6 +181,12 @@ def write_manifests(data_dir: Path, output_dir: Path) -> dict[str, Path]:
 
 
 def convert_directory(data_dir: Path, config: MelConfig = MelConfig()) -> tuple[Path, int, int, dict]:
+    """
+    Convert an FMA audio directory into mel tensors and split manifests.
+
+    Assumptions:
+    - data_dir contains FMA-style mp3 paths and sibling metadata is available.
+    """
     audio_files = sorted(p for p in data_dir.rglob("*.mp3") if p.is_file())
     if not audio_files:
         raise FileNotFoundError(f"no mp3 files found under {data_dir}")
@@ -192,6 +228,12 @@ def convert_directory(data_dir: Path, config: MelConfig = MelConfig()) -> tuple[
 
 
 def write_sample_images(data_dir: Path) -> Path:
+    """
+    Write one grayscale mel preview image per top-level genre.
+
+    Assumptions:
+    - Mel tensors have already been generated for data_dir.
+    """
     output_dir = data_dir.parent / f"{data_dir.name}_mel"
     tracks_csv = find_tracks_csv(data_dir)
     genres = {tid: m["genre_top"] for tid, m in load_track_metadata(tracks_csv).items() if m["genre_top"]}
@@ -228,6 +270,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """
+    CLI entry point for converting audio to mel tensors and optional previews.
+
+    Assumptions:
+    - The provided data directory exists and contains mp3 files.
+    """
     args = parse_args()
     data_dir = args.data_dir.expanduser().resolve()
     if not data_dir.is_dir():

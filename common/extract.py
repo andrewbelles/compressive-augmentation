@@ -20,6 +20,12 @@ def extract_embeddings(
     config: dict,
     device: torch.device,
 ) -> Path:
+    """
+    Extract full-track averaged encoder embeddings into the shared parquet.
+
+    Assumptions:
+    - ckpt_path contains a WaveBarlowModel checkpoint and manifests cover all splits.
+    """
     payload      = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     source       = str(payload["source_name"])
     dataset_name = str(payload["dataset"])

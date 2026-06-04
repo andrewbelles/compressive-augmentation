@@ -24,6 +24,12 @@ def load_waveform(
     offset_sec: float, 
     duration_sec: float
 ) -> np.ndarray:
+    """
+    Load a normalized mono waveform segment from cached numpy data or ffmpeg.
+
+    Assumptions:
+    - Audio has been predecoded to .npy when speed matters; otherwise ffmpeg is on PATH.
+    """
     npy_path = audio_path.with_suffix(".npy")
     if npy_path.exists():
         y       = np.load(npy_path, mmap_mode="r")
@@ -50,6 +56,12 @@ def load_waveform(
 
 
 def srht_cs_view(y: np.ndarray, ratio: float, rng: np.random.Generator) -> torch.Tensor:
+    """
+    Create a single SRHT compressive-sensing reconstruction view.
+
+    Assumptions:
+    - Input is a fixed-length waveform segment and ratio is expressed as percent.
+    """
     n  = len(y)
     m  = max(1, int(round(n * ratio / 100.0)))
     p2 = 1 << math.ceil(math.log2(max(n, 2)))
@@ -86,6 +98,12 @@ def dct_cs_view(
     rng: np.random.Generator, 
     uniform: bool = False
 ) -> torch.Tensor:
+    """
+    Create a single DCT-masked compressive-sensing reconstruction view.
+
+    Assumptions:
+    - Non-uniform sampling uses the shared DCT probability generator.
+    """
     n      = len(y)
     m      = max(1, int(round(n * ratio / 100.0)))
     coeffs = dct(y, norm="ortho", workers=1)
@@ -97,6 +115,12 @@ def dct_cs_view(
 
 
 class WaveBarlowDataset(Dataset):
+    """
+    Dataset that yields paired DCT/SRHT compressive views for Barlow training.
+
+    Assumptions:
+    - Manifests contain relative audio paths rooted at audio_root.
+    """
     def __init__(
         self,
         data_dir: Path,
@@ -135,6 +159,12 @@ class WaveBarlowDataset(Dataset):
         return len(self.rows)
 
     def slice_segment(self, index: int, offset: float) -> np.ndarray:
+        """
+        Return one fixed-length waveform crop for a manifest row.
+
+        Assumptions:
+        - Cached full-track arrays are already sampled at self.sample_rate.
+        """
         n = int(self.segment_seconds * self.sample_rate)
         if self._wav_cache is not None:
             y_full = self._wav_cache[index]
@@ -149,6 +179,12 @@ class WaveBarlowDataset(Dataset):
         )
 
     def __getitem__(self, index: int) -> tuple:
+        """
+        Build deterministic per-index training views or return the raw crop.
+
+        Assumptions:
+        - torch.initial_seed changes by epoch when DataLoader workers are used.
+        """
         epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
         rng        = np.random.default_rng([self.seed, index, epoch_seed])
         offset     = float(rng.uniform(10.0, 25.0))
@@ -168,6 +204,12 @@ class WaveBarlowDataset(Dataset):
 
 
 class WaveABTDataset(Dataset):
+    """
+    Dataset that yields paired traditional waveform augmentations for Barlow training.
+
+    Assumptions:
+    - policy is one of the locally defined waveform augmentation policies.
+    """
     def __init__(
         self,
         data_dir: Path,
@@ -204,6 +246,12 @@ class WaveABTDataset(Dataset):
         return len(self.rows)
 
     def slice_segment(self, index: int, offset: float) -> np.ndarray:
+        """
+        Return one fixed-length waveform crop for a manifest row.
+
+        Assumptions:
+        - Cached full-track arrays are already sampled at self.sample_rate.
+        """
         n = int(self.segment_seconds * self.sample_rate)
         if self._wav_cache is not None:
             y_full = self._wav_cache[index]
@@ -218,6 +266,12 @@ class WaveABTDataset(Dataset):
         )
 
     def __getitem__(self, index: int) -> tuple:
+        """
+        Build deterministic per-index augmented views or return the raw crop.
+
+        Assumptions:
+        - Validation uses epoch_seed zero for repeatable view generation.
+        """
         epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
         rng        = np.random.default_rng([self.seed, index, epoch_seed])
         offset     = float(rng.uniform(10.0, 25.0))
@@ -237,6 +291,12 @@ class WaveABTDataset(Dataset):
 
 
 class SupConDataset(Dataset):
+    """
+    Dataset that yields paired waveform augmentations plus genre labels.
+
+    Assumptions:
+    - genre_top values define the supervised contrastive classes.
+    """
     def __init__(
         self,
         data_dir: Path,
@@ -274,6 +334,12 @@ class SupConDataset(Dataset):
         return len(self.rows)
 
     def slice_segment(self, index: int, offset: float) -> np.ndarray:
+        """
+        Return one fixed-length waveform crop for a manifest row.
+
+        Assumptions:
+        - Cached full-track arrays are already sampled at self.sample_rate.
+        """
         n = int(self.segment_seconds * self.sample_rate)
         if self._wav_cache is not None:
             y_full = self._wav_cache[index]
@@ -288,6 +354,12 @@ class SupConDataset(Dataset):
         )
 
     def __getitem__(self, index: int) -> tuple:
+        """
+        Build deterministic augmented views and the encoded genre label.
+
+        Assumptions:
+        - Label mappings are split-local and only used within this dataset instance.
+        """
         row        = self.rows[index]
         epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
         rng        = np.random.default_rng([self.seed, index, epoch_seed])

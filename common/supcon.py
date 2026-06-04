@@ -14,6 +14,12 @@ SPLITS = ("training", "validation", "test")
 EPS = 1e-12
 
 def supcon_loss(feats: torch.Tensor, labels: torch.Tensor, temp: float = 0.07) -> torch.Tensor:
+    """
+    Compute supervised contrastive loss over two-view feature batches.
+
+    Assumptions:
+    - labels align with feats and positives are examples sharing the same label.
+    """
     feats  = F.normalize(feats, dim=1)
     sim    = feats @ feats.T / temp
     n      = feats.size(0)
@@ -35,6 +41,12 @@ def extract_supcon_embeddings(
     config: dict,
     device: torch.device,
 ) -> Path:
+    """
+    Extract full-track averaged SupCon encoder embeddings into the shared parquet.
+
+    Assumptions:
+    - ckpt_path stores encoder_state_dict and manifests cover all splits.
+    """
     payload      = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     source       = str(payload["source_name"])
     dataset_name = str(payload["dataset"])

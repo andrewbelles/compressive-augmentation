@@ -82,6 +82,12 @@ def _style_legend(ax: plt.Axes) -> None:
 
 
 def plot_f1_vs_ratio(linear: pd.DataFrame, out: Path) -> None:
+    """
+    Plot test macro-F1 across compression ratios with baseline reference lines.
+
+    Assumptions:
+    - linear contains one row per method base with seed-aggregated confidence intervals.
+    """
     cs        = linear[linear["family"].isin(CS_STYLES)].copy()
     baselines = linear[~linear["family"].isin(CS_STYLES)]
 
@@ -125,6 +131,12 @@ def plot_f1_vs_ratio(linear: pd.DataFrame, out: Path) -> None:
 
 def plot_nuisance_perturbation(pert: pd.DataFrame, linear: pd.DataFrame,
                                align: pd.DataFrame, out: Path) -> None:
+    """
+    Plot nuisance magnitude against downstream F1 and between-view alignment.
+
+    Assumptions:
+    - Input CSVs share the same method base identifiers.
+    """
     merged = pert.merge(linear[["method", "test_f1_mean"]], on="method", how="inner")
     merged = merged.merge(align[["method", "between_views_mean"]], on="method", how="left")
     cs     = merged[merged["family"].isin(CS_STYLES)].copy()
@@ -164,6 +176,12 @@ def plot_nuisance_perturbation(pert: pd.DataFrame, linear: pd.DataFrame,
 
 
 def plot_alignment_vs_f1(align: pd.DataFrame, linear: pd.DataFrame, out: Path) -> None:
+    """
+    Plot alignment and uniformity metrics against test macro-F1.
+
+    Assumptions:
+    - align and linear are outputs from the same analysis run.
+    """
     merged  = align.merge(linear[["method", "test_f1_mean"]], on="method", how="inner")
     metrics = [
         ("between_views_mean", "between_views_std", "Between-view alignment"),
@@ -225,6 +243,12 @@ def load_csv(path: Path, name: str) -> pd.DataFrame | None:
 
 
 def main() -> None:
+    """
+    CLI entry point for generating all paper figures from analysis CSVs.
+
+    Assumptions:
+    - Missing CSVs should skip only the figures that require them.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--analysis-dir", type=Path, default=Path("analysis"),
                         help="Directory containing CSVs from analyze.py")
