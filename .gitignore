@@ -15,6 +15,7 @@ analysis/*
 !/data/.gitkeep
 !/checkpoints/.gitkeep
 !/analysis/.gitkeep
+!/images/.gitkeep
 
 !/preprocess/data/.gitkeep
 /preprocess/data/*

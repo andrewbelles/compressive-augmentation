@@ -163,6 +163,7 @@ def plot_nuisance_perturbation(pert: pd.DataFrame, linear: pd.DataFrame,
 
     for ax, (ycol, ylabel) in zip(axes, panels):
         _theme(ax)
+        ax.set_xscale("log")
         for fam, st in CS_STYLES.items():
             sub = cs[cs["family"] == fam].sort_values("ratio")
             if sub.empty:
@@ -176,7 +177,7 @@ def plot_nuisance_perturbation(pert: pd.DataFrame, linear: pd.DataFrame,
                 ax.annotate(lbl, (row["nuis_norm"], row[ycol]),
                             fontsize=6, color=st["color"], alpha=0.8,
                             xytext=(4, 2), textcoords="offset points")
-        ax.set_xlabel("Nuisance perturbation magnitude (scaled)")
+        ax.set_xlabel("Nuisance perturbation magnitude (log scale)")
         ax.set_ylabel(ylabel)
         ax.legend(framealpha=0.92, fontsize=8)
         _style_legend(ax)
