@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 
 from common.data import WaveBarlowDataset, WaveABTDataset, SupConDataset
-from common.model import WaveBarlowModel, WaveSTFTEncoder, barlow_twins_loss
+from common.model import AudioBarlowModel, AudioSTFTEncoder, barlow_twins_loss
 from common.ops import gpu_dct_cs_view_batch, gpu_srht_batch, gpu_wave_policy_batch
 from common.supcon import supcon_loss
 from common.extract import extract_embeddings
@@ -292,7 +292,7 @@ def train_barlow(
     train_raw = cache_raw_on_gpu(train_ds, device)
     val_raw   = cache_raw_on_gpu(val_ds,   device)
 
-    model = WaveBarlowModel(
+    model = AudioBarlowModel(
         embedding_dim         = EMBEDDING_DIM,
         base_channels         = BASE_CHANNELS,
         projection_hidden_dim = PROJ_HIDDEN,
@@ -398,7 +398,7 @@ def train_supcon(
     train_raw, train_labels = cache_supcon_on_gpu(train_ds, device)
     val_raw,   val_labels   = cache_supcon_on_gpu(val_ds,   device)
 
-    encoder = WaveSTFTEncoder(
+    encoder = AudioSTFTEncoder(
         embedding_dim = EMBEDDING_DIM,
         base_channels = BASE_CHANNELS,
         n_fft=N_FFT, hop_length=HOP_LENGTH,

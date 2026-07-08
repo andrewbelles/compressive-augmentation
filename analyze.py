@@ -38,7 +38,7 @@ from sklearn.metrics import f1_score as sklearn_f1
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 from common.data import load_manifest
-from common.model import WaveSTFTEncoder
+from common.model import AudioSTFTEncoder
 from common.ops import gpu_dct_cs_view_batch, gpu_srht_batch, gpu_wave_policy_batch
 
 
@@ -564,7 +564,7 @@ def load_encoder(ckpt_path: Path, device: torch.device):
     """
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     mc   = ckpt.get("model", {})
-    enc  = WaveSTFTEncoder(
+    enc  = AudioSTFTEncoder(
         embedding_dim = int(ckpt.get("embedding_dim", 256)),
         base_channels = int(mc.get("base_channels",   16)),
         n_fft         = int(mc.get("n_fft",           1024)),

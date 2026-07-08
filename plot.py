@@ -273,7 +273,7 @@ _MEL_WAVE_CFG = {
 
 def _mel_transform() -> "torchaudio.transforms.MelSpectrogram":
     """
-    Build the mel-spectrogram transform matching the WaveSTFTEncoder config.
+    Build the mel-spectrogram transform matching the AudioSTFTEncoder config.
 
     Assumptions:
     - Parameters must stay in sync with the training encoder.

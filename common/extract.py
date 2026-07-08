@@ -6,9 +6,26 @@ import pandas as pd
 import torch
 
 from common.data import load_manifest, load_waveform
-from common.model import WaveBarlowModel
+from common.model import AudioBarlowModel
 
 SPLITS = ("training", "validation", "test")
+
+
+def write_frames_to_parquet(
+    frames: list[pd.DataFrame],
+    out_path: Path,
+    dedup_keys: list[str],
+) -> None:
+    """Atomic append with dedup to a shared parquet file."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = out_path.with_suffix(".lock")
+    with open(lock_path, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame()
+        combined = pd.concat([existing, *frames], ignore_index=True)
+        combined = combined.drop_duplicates(subset=dedup_keys, keep="last")
+        combined.to_parquet(out_path, index=False)
+    print(f"wrote path={out_path} total_rows={len(combined)}", flush=True)
 
 
 @torch.no_grad()
@@ -20,12 +37,7 @@ def extract_embeddings(
     config: dict,
     device: torch.device,
 ) -> Path:
-    """
-    Extract full-track averaged encoder embeddings into the shared parquet.
-
-    Assumptions:
-    - ckpt_path contains a WaveBarlowModel checkpoint and manifests cover all splits.
-    """
+    """Extract full-track averaged encoder embeddings into the shared parquet."""
     payload      = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     source       = str(payload["source_name"])
     dataset_name = str(payload["dataset"])
@@ -38,7 +50,7 @@ def extract_embeddings(
             return out_path
 
     m_cfg = payload["model"]
-    model = WaveBarlowModel(
+    model = AudioBarlowModel(
         embedding_dim         = int(payload["embedding_dim"]),
         base_channels         = int(m_cfg["base_channels"]),
         projection_hidden_dim = int(m_cfg["projection_hidden_dim"]),
@@ -84,7 +96,7 @@ def extract_embeddings(
                 )
             except Exception:
                 continue
-            crops = [y_full[s : s + seg_samples] 
+            crops = [y_full[s : s + seg_samples]
                      for s in range(0, full_samples - seg_samples + 1, seg_samples)]
             if not crops:
                 crops = [y_full[:seg_samples]]
@@ -112,12 +124,5 @@ def extract_embeddings(
         print(f"extracted source={source} split={split} n={len(Z)}", flush=True)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = out_path.with_suffix(".lock")
-    with open(lock_path, "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame()
-        combined = pd.concat([existing, *all_frames], ignore_index=True)
-        combined = combined.drop_duplicates(subset=["method", "split", "track_id"], keep="last")
-        combined.to_parquet(out_path, index=False)
-    print(f"wrote path={out_path} total_rows={len(combined)}", flush=True)
+    write_frames_to_parquet(all_frames, out_path, ["method", "split", "track_id"])
     return out_path

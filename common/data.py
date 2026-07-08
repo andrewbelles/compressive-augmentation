@@ -8,16 +8,11 @@ import torch
 from scipy.fft import dct, idct
 from torch.utils.data import Dataset
 
-from common.ops import apply_wave_policy, _get_dct_probs 
+from common.ops import apply_wave_policy, _get_dct_probs
 
 
 def load_manifest(data_dir: Path, split: str) -> pd.DataFrame:
-    """
-    Load the CSV manifest for one dataset split.
-
-    Assumptions:
-    - Manifest filenames use the manifest_<split>.csv convention.
-    """
+    """Load the CSV manifest for one dataset split."""
     manifest_path = data_dir / f"manifest_{split}.csv"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"missing manifest: {manifest_path}")
@@ -25,17 +20,12 @@ def load_manifest(data_dir: Path, split: str) -> pd.DataFrame:
 
 
 def load_waveform(
-    audio_path: Path, 
-    sr: int, 
-    offset_sec: float, 
+    audio_path: Path,
+    sr: int,
+    offset_sec: float,
     duration_sec: float
 ) -> np.ndarray:
-    """
-    Load a normalized mono waveform segment from cached numpy data or ffmpeg.
-
-    Assumptions:
-    - Audio has been predecoded to .npy when speed matters; otherwise ffmpeg is on PATH.
-    """
+    """Load a normalized mono waveform segment from cached numpy data or ffmpeg."""
     npy_path = audio_path.with_suffix(".npy")
     if npy_path.exists():
         y       = np.load(npy_path, mmap_mode="r")
@@ -62,12 +52,7 @@ def load_waveform(
 
 
 def srht_cs_view(y: np.ndarray, ratio: float, rng: np.random.Generator) -> torch.Tensor:
-    """
-    Create a single SRHT compressive-sensing reconstruction view.
-
-    Assumptions:
-    - Input is a fixed-length waveform segment and ratio is expressed as percent.
-    """
+    """Apply SRHT compressive sensing and return the reconstructed view."""
     n  = len(y)
     m  = max(1, int(round(n * ratio / 100.0)))
     p2 = 1 << math.ceil(math.log2(max(n, 2)))
@@ -99,34 +84,62 @@ def srht_cs_view(y: np.ndarray, ratio: float, rng: np.random.Generator) -> torch
 
 
 def dct_cs_view(
-    y: np.ndarray, 
-    ratio: float, 
-    rng: np.random.Generator, 
+    y: np.ndarray,
+    ratio: float,
+    rng: np.random.Generator,
     uniform: bool = False
 ) -> torch.Tensor:
-    """
-    Create a single DCT-masked compressive-sensing reconstruction view.
-
-    Assumptions:
-    - Non-uniform sampling uses the shared DCT probability generator.
-    """
+    """Apply DCT-masked compressive sensing and return the reconstructed view."""
     n      = len(y)
     m      = max(1, int(round(n * ratio / 100.0)))
     coeffs = dct(y, norm="ortho", workers=1)
-    idx    = (rng.choice(n, m, replace=False) 
+    idx    = (rng.choice(n, m, replace=False)
               if uniform else rng.choice(n, m, replace=False, p=_get_dct_probs(n)))
     z      = np.zeros(n, dtype=np.float32)
     z[idx] = coeffs[idx] * math.sqrt(n / m)
     return torch.from_numpy(idct(z, norm="ortho", workers=1).astype(np.float32))
 
 
-class WaveBarlowDataset(Dataset):
-    """
-    Dataset that yields paired DCT/SRHT compressive views for Barlow training.
+class BaseBarlowDataset(Dataset):
+    """Abstract base for Barlow Twins datasets.
 
-    Assumptions:
-    - Manifests contain relative audio paths rooted at audio_root.
+    Subclasses implement load_sample and make_views. Both views returned by
+    make_views must be independent draws from the same augmentation family and
+    strength; the Barlow cross-correlation target is only valid under this
+    exchangeability constraint.
     """
+
+    _raw_only: bool = False
+
+    def load_sample(self, index: int) -> np.ndarray:
+        """Return the raw sample array for index without augmentation."""
+        raise NotImplementedError
+
+    def make_views(
+        self,
+        index: int,
+        rng1: np.random.Generator,
+        rng2: np.random.Generator,
+    ) -> tuple:
+        """Return (view1, view2) tensors from independent draws of the same augmentation."""
+        raise NotImplementedError
+
+    def __len__(self) -> int:
+        raise NotImplementedError
+
+    def __getitem__(self, index: int) -> tuple:
+        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if getattr(self, "is_train", False) else 0
+        if self._raw_only:
+            y = self.load_sample(index)
+            return (torch.from_numpy(np.asarray(y, dtype=np.float32)),)
+        rng1 = np.random.default_rng([getattr(self, "seed", 0), index, epoch_seed, 1])
+        rng2 = np.random.default_rng([getattr(self, "seed", 0), index, epoch_seed, 2])
+        return self.make_views(index, rng1, rng2)
+
+
+class WaveBarlowDataset(BaseBarlowDataset):
+    """Barlow Twins dataset yielding paired DCT/SRHT compressive views of audio waveforms."""
+
     def __init__(
         self,
         data_dir: Path,
@@ -141,12 +154,6 @@ class WaveBarlowDataset(Dataset):
         srht: bool = False,
         preload: bool = False,
     ) -> None:
-        """
-        Initialize manifest rows, CS settings, and optional waveform cache.
-
-        Assumptions:
-        - exclude_genres is applied before any cached waveforms are loaded.
-        """
         manifest = load_manifest(data_dir.resolve(), split)
         if exclude_genres:
             manifest = manifest[~manifest["genre_top"].isin(exclude_genres)]
@@ -170,14 +177,12 @@ class WaveBarlowDataset(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
-    def slice_segment(self, index: int, offset: float) -> np.ndarray:
-        """
-        Return one fixed-length waveform crop for a manifest row.
-
-        Assumptions:
-        - Cached full-track arrays are already sampled at self.sample_rate.
-        """
-        n = int(self.segment_seconds * self.sample_rate)
+    def load_sample(self, index: int) -> np.ndarray:
+        """Return a random crop of the audio track at index."""
+        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
+        rng    = np.random.default_rng([self.seed, index, epoch_seed])
+        offset = float(rng.uniform(10.0, 25.0))
+        n      = int(self.segment_seconds * self.sample_rate)
         if self._wav_cache is not None:
             y_full = self._wav_cache[index]
             start  = int(offset * self.sample_rate)
@@ -190,22 +195,13 @@ class WaveBarlowDataset(Dataset):
             self.sample_rate, offset, self.segment_seconds,
         )
 
-    def __getitem__(self, index: int) -> tuple:
-        """
-        Build deterministic per-index training views or return the raw crop.
-
-        Assumptions:
-        - torch.initial_seed changes by epoch when DataLoader workers are used.
-        """
-        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
-        rng        = np.random.default_rng([self.seed, index, epoch_seed])
-        offset     = float(rng.uniform(10.0, 25.0))
-        y          = self.slice_segment(index, offset)
-        y_t        = torch.from_numpy(y)
-        if self._raw_only:
-            return (y_t,)
-        rng1 = np.random.default_rng([self.seed, index, epoch_seed, 1])
-        rng2 = np.random.default_rng([self.seed, index, epoch_seed, 2])
+    def make_views(
+        self,
+        index: int,
+        rng1: np.random.Generator,
+        rng2: np.random.Generator,
+    ) -> tuple:
+        y = self.load_sample(index)
         if self.srht:
             v1 = srht_cs_view(y, self.ratio, rng1).unsqueeze(0)
             v2 = srht_cs_view(y, self.ratio, rng2).unsqueeze(0)
@@ -215,13 +211,9 @@ class WaveBarlowDataset(Dataset):
         return v1, v2
 
 
-class WaveABTDataset(Dataset):
-    """
-    Dataset that yields paired traditional waveform augmentations for Barlow training.
+class WaveABTDataset(BaseBarlowDataset):
+    """Barlow Twins dataset yielding paired traditional waveform augmentation views."""
 
-    Assumptions:
-    - policy is one of the locally defined waveform augmentation policies.
-    """
     def __init__(
         self,
         data_dir: Path,
@@ -235,12 +227,6 @@ class WaveABTDataset(Dataset):
         exclude_genres: list[str] | None = None,
         preload: bool = False,
     ) -> None:
-        """
-        Initialize manifest rows, augmentation settings, and optional waveform cache.
-
-        Assumptions:
-        - exclude_genres is applied before any cached waveforms are loaded.
-        """
         manifest = load_manifest(data_dir.resolve(), split)
         if exclude_genres:
             manifest = manifest[~manifest["genre_top"].isin(exclude_genres)]
@@ -263,14 +249,12 @@ class WaveABTDataset(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
-    def slice_segment(self, index: int, offset: float) -> np.ndarray:
-        """
-        Return one fixed-length waveform crop for a manifest row.
-
-        Assumptions:
-        - Cached full-track arrays are already sampled at self.sample_rate.
-        """
-        n = int(self.segment_seconds * self.sample_rate)
+    def load_sample(self, index: int) -> np.ndarray:
+        """Return a random crop of the audio track at index."""
+        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
+        rng    = np.random.default_rng([self.seed, index, epoch_seed])
+        offset = float(rng.uniform(10.0, 25.0))
+        n      = int(self.segment_seconds * self.sample_rate)
         if self._wav_cache is not None:
             y_full = self._wav_cache[index]
             start  = int(offset * self.sample_rate)
@@ -283,22 +267,13 @@ class WaveABTDataset(Dataset):
             self.sample_rate, offset, self.segment_seconds,
         )
 
-    def __getitem__(self, index: int) -> tuple:
-        """
-        Build deterministic per-index augmented views or return the raw crop.
-
-        Assumptions:
-        - Validation uses epoch_seed zero for repeatable view generation.
-        """
-        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
-        rng        = np.random.default_rng([self.seed, index, epoch_seed])
-        offset     = float(rng.uniform(10.0, 25.0))
-        y          = self.slice_segment(index, offset)
-        y_t        = torch.from_numpy(y)
-        if self._raw_only:
-            return (y_t,)
-        rng1 = np.random.default_rng([self.seed, index, epoch_seed, 1])
-        rng2 = np.random.default_rng([self.seed, index, epoch_seed, 2])
+    def make_views(
+        self,
+        index: int,
+        rng1: np.random.Generator,
+        rng2: np.random.Generator,
+    ) -> tuple:
+        y  = self.load_sample(index)
         v1 = torch.from_numpy(
             apply_wave_policy(y, self.policy, self.augment_config, rng1)
         ).unsqueeze(0)
@@ -308,13 +283,9 @@ class WaveABTDataset(Dataset):
         return v1, v2
 
 
-class SupConDataset(Dataset):
-    """
-    Dataset that yields paired waveform augmentations plus genre labels.
+class SupConDataset(BaseBarlowDataset):
+    """Dataset yielding paired waveform augmentations and genre labels for supervised contrastive training."""
 
-    Assumptions:
-    - genre_top values define the supervised contrastive classes.
-    """
     def __init__(
         self,
         data_dir: Path,
@@ -327,12 +298,6 @@ class SupConDataset(Dataset):
         exclude_genres: list[str] | None = None,
         preload: bool = False,
     ) -> None:
-        """
-        Initialize manifest rows, augmentation settings, labels, and optional cache.
-
-        Assumptions:
-        - genre_top is present for all supervised rows after filtering.
-        """
         manifest = load_manifest(data_dir.resolve(), split)
         if exclude_genres:
             manifest = manifest[~manifest["genre_top"].isin(exclude_genres)]
@@ -357,14 +322,12 @@ class SupConDataset(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
-    def slice_segment(self, index: int, offset: float) -> np.ndarray:
-        """
-        Return one fixed-length waveform crop for a manifest row.
-
-        Assumptions:
-        - Cached full-track arrays are already sampled at self.sample_rate.
-        """
-        n = int(self.segment_seconds * self.sample_rate)
+    def load_sample(self, index: int) -> np.ndarray:
+        """Return a random crop of the audio track at index."""
+        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
+        rng    = np.random.default_rng([self.seed, index, epoch_seed])
+        offset = float(rng.uniform(10.0, 25.0))
+        n      = int(self.segment_seconds * self.sample_rate)
         if self._wav_cache is not None:
             y_full = self._wav_cache[index]
             start  = int(offset * self.sample_rate)
@@ -377,27 +340,29 @@ class SupConDataset(Dataset):
             self.sample_rate, offset, self.segment_seconds,
         )
 
-    def __getitem__(self, index: int) -> tuple:
-        """
-        Build deterministic augmented views and the encoded genre label.
-
-        Assumptions:
-        - Label mappings are split-local and only used within this dataset instance.
-        """
-        row        = self.rows[index]
-        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
-        rng        = np.random.default_rng([self.seed, index, epoch_seed])
-        offset     = float(rng.uniform(10.0, 25.0))
-        y          = self.slice_segment(index, offset)
-        lbl        = self.genre_to_idx[row["genre_top"]]
-        if self._raw_only:
-            return torch.from_numpy(y), lbl
-        rng1 = np.random.default_rng([self.seed, index, epoch_seed, 1])
-        rng2 = np.random.default_rng([self.seed, index, epoch_seed, 2])
-        v1   = torch.from_numpy(
+    def make_views(
+        self,
+        index: int,
+        rng1: np.random.Generator,
+        rng2: np.random.Generator,
+    ) -> tuple:
+        # SupConDataset returns a triple; make_views is unused but satisfies the base contract
+        y  = self.load_sample(index)
+        v1 = torch.from_numpy(
             apply_wave_policy(y, "w3", self.augment_config, rng1)
         ).unsqueeze(0)
-        v2   = torch.from_numpy(
+        v2 = torch.from_numpy(
             apply_wave_policy(y, "w3", self.augment_config, rng2)
         ).unsqueeze(0)
+        return v1, v2
+
+    def __getitem__(self, index: int) -> tuple:
+        row        = self.rows[index]
+        epoch_seed = int(torch.initial_seed()) % (2 ** 31) if self.is_train else 0
+        lbl        = self.genre_to_idx[row["genre_top"]]
+        if self._raw_only:
+            return torch.from_numpy(self.load_sample(index)), lbl
+        rng1 = np.random.default_rng([self.seed, index, epoch_seed, 1])
+        rng2 = np.random.default_rng([self.seed, index, epoch_seed, 2])
+        v1, v2 = self.make_views(index, rng1, rng2)
         return v1, v2, lbl

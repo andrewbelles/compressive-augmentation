@@ -1,4 +1,3 @@
-import fcntl
 from pathlib import Path
 
 import numpy as np
@@ -6,20 +5,13 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
-from common.data import load_manifest, load_waveform
-from common.model import WaveSTFTEncoder
-
 SPLITS = ("training", "validation", "test")
 
 EPS = 1e-12
 
-def supcon_loss(feats: torch.Tensor, labels: torch.Tensor, temp: float = 0.07) -> torch.Tensor:
-    """
-    Compute supervised contrastive loss over two-view feature batches.
 
-    Assumptions:
-    - labels align with feats and positives are examples sharing the same label.
-    """
+def supcon_loss(feats: torch.Tensor, labels: torch.Tensor, temp: float = 0.07) -> torch.Tensor:
+    """Supervised contrastive loss over two-view feature batches."""
     feats  = F.normalize(feats, dim=1)
     sim    = feats @ feats.T / temp
     n      = feats.size(0)
@@ -41,12 +33,11 @@ def extract_supcon_embeddings(
     config: dict,
     device: torch.device,
 ) -> Path:
-    """
-    Extract full-track averaged SupCon encoder embeddings into the shared parquet.
+    """Extract full-track averaged SupCon encoder embeddings into the shared parquet."""
+    from common.data import load_manifest, load_waveform
+    from common.model import AudioSTFTEncoder
+    from common.extract import write_frames_to_parquet
 
-    Assumptions:
-    - ckpt_path stores encoder_state_dict and manifests cover all splits.
-    """
     payload      = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     source       = str(payload["source_name"])
     dataset_name = str(payload["dataset"])
@@ -64,7 +55,7 @@ def extract_supcon_embeddings(
     seg           = float(payload["segment_seconds"])
     ckpt_seed     = int(payload["seed"])
 
-    encoder = WaveSTFTEncoder(
+    encoder = AudioSTFTEncoder(
         embedding_dim = embedding_dim,
         base_channels = int(m_cfg["base_channels"]),
         n_fft         = int(m_cfg["n_fft"]),
@@ -116,12 +107,5 @@ def extract_supcon_embeddings(
         print(f"extracted source={source} split={split} n={len(Z)}", flush=True)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = out_path.with_suffix(".lock")
-    with open(lock_path, "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame()
-        combined = pd.concat([existing, *all_frames], ignore_index=True)
-        combined = combined.drop_duplicates(subset=["method", "split", "track_id"], keep="last")
-        combined.to_parquet(out_path, index=False)
-    print(f"wrote path={out_path} total_rows={len(combined)}", flush=True)
+    write_frames_to_parquet(all_frames, out_path, ["method", "split", "track_id"])
     return out_path

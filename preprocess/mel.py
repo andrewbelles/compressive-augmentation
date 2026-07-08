@@ -2,7 +2,7 @@
 #
 # mel.py  Andrew Belles  April 10th 2026
 #
-# Generates Mel-Spectrogram matching WaveSTFTEncoder exactly:
+# Generates Mel-Spectrogram matching AudioSTFTEncoder exactly:
 # n_fft=1024, hop=256, n_mels=128, f_min=80 Hz, Slaney norm, HTK scale,
 # log1p + per-track z-score normalization.  GPU-accelerated batch processing.
 #

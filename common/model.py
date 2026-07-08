@@ -2,16 +2,13 @@ import torch
 import torch.nn as nn
 import torchaudio.functional as AF
 
+__all__ = ["barlow_twins_loss", "off_diagonal", "AudioSTFTEncoder", "AudioBarlowModel"]
+
 EPS = 1e-12
 
 
 def off_diagonal(matrix: torch.Tensor) -> torch.Tensor:
-    """
-    Return the flattened off-diagonal entries of a square matrix.
-
-    Assumptions:
-    - The input matrix is square and small enough for a flattened view.
-    """
+    """Return flattened off-diagonal entries of a square matrix."""
     n, m = matrix.shape
     if n != m:
         raise ValueError("expected square matrix")
@@ -23,12 +20,7 @@ def barlow_twins_loss(
     right: torch.Tensor,
     lambd: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Compute the Barlow Twins decorrelation objective and its components.
-
-    Assumptions:
-    - Inputs are paired projector outputs with matching batch and feature dimensions.
-    """
+    """Compute the Barlow Twins decorrelation objective and its on/off-diagonal components."""
     batch_size = left.size(0)
     left  = (left  - left.mean(dim=0))  / left.std(dim=0).clamp_min(EPS)
     right = (right - right.mean(dim=0)) / right.std(dim=0).clamp_min(EPS)
@@ -38,13 +30,9 @@ def barlow_twins_loss(
     return on_diag + float(lambd) * off_diag, on_diag, off_diag
 
 
-class WaveSTFTEncoder(nn.Module):
-    """
-    STFT-to-mel convolutional encoder for fixed-length waveform segments.
+class AudioSTFTEncoder(nn.Module):
+    """Convolutional encoder for mono audio waveforms; not suitable for I/Q signals."""
 
-    Assumptions:
-    - Input tensors are shaped batch by channel by time at the configured sample rate.
-    """
     def __init__(
         self,
         embedding_dim: int,
@@ -55,12 +43,6 @@ class WaveSTFTEncoder(nn.Module):
         n_mels: int = 128,
         sample_rate: int = 22050,
     ) -> None:
-        """
-        Configure STFT buffers, mel filterbank, convolutional trunk, and head.
-
-        Assumptions:
-        - n_blocks is positive and determines the channel progression.
-        """
         super().__init__()
         self.n_fft      = int(n_fft)
         self.hop_length = int(hop_length)
@@ -88,12 +70,7 @@ class WaveSTFTEncoder(nn.Module):
         )
 
     def to_mel(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Convert waveform batches to normalized log-mel tensors.
-
-        Assumptions:
-        - The registered mel filterbank and Hann window are on the same device as x.
-        """
+        """Convert a batch of waveforms to normalized log-mel spectrograms."""
         y    = x.squeeze(1)
         spec = torch.stft(y, n_fft=self.n_fft, hop_length=self.hop_length,
                           win_length=self.n_fft, window=self.window, return_complex=True)
@@ -104,24 +81,14 @@ class WaveSTFTEncoder(nn.Module):
         return (mel - mean) / std
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Encode waveforms into fixed-size embeddings.
-
-        Assumptions:
-        - x has the shape expected by to_mel.
-        """
         feat   = self.features(self.to_mel(x))
         pooled = torch.cat([feat.mean(dim=(2, 3)), feat.amax(dim=(2, 3))], dim=1)
         return self.head(pooled)
 
 
-class WaveBarlowModel(nn.Module):
-    """
-    Wrap the waveform encoder with a Barlow Twins projection head.
+class AudioBarlowModel(nn.Module):
+    """AudioSTFTEncoder with a Barlow Twins projection head."""
 
-    Assumptions:
-    - The encoder output dimension matches the projector input dimension.
-    """
     def __init__(
         self,
         embedding_dim: int,
@@ -134,21 +101,9 @@ class WaveBarlowModel(nn.Module):
         n_mels: int = 128,
         sample_rate: int = 22050,
     ) -> None:
-        """
-        Configure the shared encoder and projection head for Barlow training.
-
-        Assumptions:
-        - projection_dim is the feature dimension used in the Barlow loss.
-        """
         super().__init__()
-        self.encoder   = WaveSTFTEncoder(
-            embedding_dim, 
-            base_channels, 
-            n_fft, 
-            hop_length, 
-            n_blocks, 
-            n_mels, 
-            sample_rate
+        self.encoder   = AudioSTFTEncoder(
+            embedding_dim, base_channels, n_fft, hop_length, n_blocks, n_mels, sample_rate
         )
         self.projector = nn.Sequential(
             nn.Linear(embedding_dim, projection_hidden_dim, bias=False),
@@ -159,12 +114,6 @@ class WaveBarlowModel(nn.Module):
     def forward(
         self, x1: torch.Tensor, x2: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Encode two views and return both embeddings and projector outputs.
-
-        Assumptions:
-        - x1 and x2 are paired batches with the same batch size.
-        """
         h1 = self.encoder(x1)
         h2 = self.encoder(x2)
         return h1, h2, self.projector(h1), self.projector(h2)
