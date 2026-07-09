@@ -67,12 +67,7 @@ TRAD_STYLES = {
 
 
 def _theme(ax: plt.Axes) -> None:
-    """
-    Apply the shared figure, axes, grid, label, and spine styling.
-
-    Assumptions:
-    - ax belongs to a Matplotlib figure that should use the paper theme.
-    """
+    """Apply shared figure, axes, grid, label, and spine styling."""
     ax.figure.patch.set_facecolor(FIG_BG)
     ax.set_facecolor(AX_BG)
     ax.grid(True, color=GRID_C, linewidth=0.6, alpha=0.65)
@@ -85,12 +80,7 @@ def _theme(ax: plt.Axes) -> None:
 
 
 def _style_legend(ax: plt.Axes) -> None:
-    """
-    Apply shared legend styling if an axes already has a legend.
-
-    Assumptions:
-    - The legend object may be absent and should be left unchanged.
-    """
+    """Apply shared legend styling to an axes if it has a legend."""
     leg = ax.get_legend()
     if leg is None:
         return
@@ -101,12 +91,7 @@ def _style_legend(ax: plt.Axes) -> None:
 
 
 def plot_f1_vs_ratio(linear: pd.DataFrame, out: Path) -> None:
-    """
-    Plot test macro-F1 across compression ratios with baseline reference lines.
-
-    Assumptions:
-    - linear contains one row per method base with seed-aggregated confidence intervals.
-    """
+    """Plot test macro-F1 vs compression ratio with baseline reference lines."""
     cs        = linear[linear["family"].isin(CS_STYLES)].copy()
     baselines = linear[~linear["family"].isin(CS_STYLES)]
 
@@ -150,12 +135,7 @@ def plot_f1_vs_ratio(linear: pd.DataFrame, out: Path) -> None:
 
 def plot_nuisance_perturbation(pert: pd.DataFrame, linear: pd.DataFrame,
                                align: pd.DataFrame, out: Path) -> None:
-    """
-    Plot nuisance magnitude against downstream F1 and between-view alignment.
-
-    Assumptions:
-    - Input CSVs share the same method base identifiers.
-    """
+    """Plot nuisance perturbation magnitude against downstream F1 and between-view alignment."""
     merged = pert.merge(linear[["method", "test_f1_mean"]], on="method", how="inner")
     merged = merged.merge(align[["method", "between_views_mean"]], on="method", how="left")
     cs     = merged[merged["family"].isin(CS_STYLES)].copy()
@@ -196,12 +176,7 @@ def plot_nuisance_perturbation(pert: pd.DataFrame, linear: pd.DataFrame,
 
 
 def plot_alignment_vs_f1(align: pd.DataFrame, linear: pd.DataFrame, out: Path) -> None:
-    """
-    Plot alignment and uniformity metrics against test macro-F1.
-
-    Assumptions:
-    - align and linear are outputs from the same analysis run.
-    """
+    """Plot alignment and uniformity metrics against test macro-F1."""
     merged  = align.merge(linear[["method", "test_f1_mean"]], on="method", how="inner")
     metrics = [
         ("between_views_mean", "between_views_std", "Between-view alignment"),
@@ -272,12 +247,7 @@ _MEL_WAVE_CFG = {
 
 
 def _mel_transform() -> "torchaudio.transforms.MelSpectrogram":
-    """
-    Build the mel-spectrogram transform matching the WaveSTFTEncoder config.
-
-    Assumptions:
-    - Parameters must stay in sync with the training encoder.
-    """
+    """Build the mel-spectrogram transform matching AudioSTFTEncoder parameters."""
     return torchaudio.transforms.MelSpectrogram(
         sample_rate=_MEL_SR, n_fft=_MEL_N_FFT, win_length=_MEL_N_FFT,
         hop_length=_MEL_HOP, f_min=_MEL_F_MIN, n_mels=_MEL_N_MELS,
@@ -286,12 +256,7 @@ def _mel_transform() -> "torchaudio.transforms.MelSpectrogram":
 
 
 def _load_segment(audio_path: Path) -> np.ndarray:
-    """
-    Decode a fixed-length mono segment from an audio file via ffmpeg.
-
-    Assumptions:
-    - ffmpeg is on PATH and the file is decodable to float32 PCM.
-    """
+    """Decode a fixed-length mono float32 segment from an audio file via ffmpeg."""
     cmd = ["ffmpeg", "-v", "error", "-i", str(audio_path),
            "-f", "f32le", "-acodec", "pcm_f32le", "-ac", "1", "-ar", str(_MEL_SR),
            "-ss", str(_MEL_OFFSET), "-t", str(_MEL_SEG_SEC), "pipe:1"]
@@ -304,23 +269,13 @@ def _load_segment(audio_path: Path) -> np.ndarray:
 
 
 def _to_mel(y: np.ndarray, tf: "torchaudio.transforms.MelSpectrogram") -> np.ndarray:
-    """
-    Convert a waveform to a log-normalized mel spectrogram.
-
-    Assumptions:
-    - tf was built with _mel_transform() and shares the repo mel config.
-    """
+    """Convert a waveform to a log1p-normalized mel spectrogram array."""
     mel = torch.log1p(tf(torch.from_numpy(y).unsqueeze(0)).squeeze(0))
     return ((mel - mel.mean()) / mel.std().clamp_min(_MEL_EPS)).numpy()
 
 
 def _aug_w3(y: np.ndarray, seed: int = 31) -> np.ndarray:
-    """
-    Apply the W3 waveform augmentation policy (stretch + gain + mask + noise).
-
-    Assumptions:
-    - Parameters are drawn from _MEL_WAVE_CFG to match training exactly.
-    """
+    """Apply the W3 waveform augmentation policy (stretch + gain + mask + noise)."""
     rng  = np.random.default_rng(seed)
     lo, hi = _MEL_WAVE_CFG["wave_stretch_scale"]
     n    = len(y)
@@ -346,12 +301,7 @@ def _aug_w3(y: np.ndarray, seed: int = 31) -> np.ndarray:
 
 
 def _aug_dct(y: np.ndarray, uniform: bool, seed: int = 1) -> np.ndarray:
-    """
-    Apply a DCT compressive-sensing reconstruction view at _MEL_RATIO percent.
-
-    Assumptions:
-    - Non-uniform sampling uses the same 1/sqrt(k) frequency prior as training.
-    """
+    """Apply a DCT compressive-sensing reconstruction view at _MEL_RATIO percent."""
     rng    = np.random.default_rng(seed)
     n      = len(y)
     m      = max(1, int(round(n * _MEL_RATIO / 100.0)))
@@ -368,12 +318,7 @@ def _aug_dct(y: np.ndarray, uniform: bool, seed: int = 1) -> np.ndarray:
 
 
 def _aug_srht(y: np.ndarray, seed: int = 2) -> np.ndarray:
-    """
-    Apply an SRHT compressive-sensing reconstruction view at _MEL_RATIO percent.
-
-    Assumptions:
-    - Input length is padded internally to the next power of two and stripped on return.
-    """
+    """Apply an SRHT compressive-sensing reconstruction view at _MEL_RATIO percent."""
     rng     = np.random.default_rng(seed)
     n       = len(y)
     m       = max(1, int(round(n * _MEL_RATIO / 100.0)))
@@ -402,12 +347,7 @@ def _aug_srht(y: np.ndarray, seed: int = 2) -> np.ndarray:
 
 
 def plot_mel_views(audio_path: Path, out: Path) -> None:
-    """
-    Plot mel-spectrogram views of one track under the original signal and four augmentations.
-
-    Assumptions:
-    - audio_path is a decodable audio file; track id is inferred from the stem.
-    """
+    """Plot mel-spectrogram views of one track under the original signal and four augmentations."""
     tf  = _mel_transform()
     y   = _load_segment(audio_path)
     tid = audio_path.stem.lstrip("0") or "0"
@@ -443,12 +383,7 @@ def plot_mel_views(audio_path: Path, out: Path) -> None:
 
 
 def load_csv(path: Path, name: str) -> pd.DataFrame | None:
-    """
-    Load an analysis CSV and report whether it is available.
-
-    Assumptions:
-    - Missing inputs should be handled by downstream plot skipping.
-    """
+    """Load an analysis CSV and return None with a message if not found."""
     if not path.exists():
         print(f"  SKIP {name}: {path} not found")
         return None
@@ -458,12 +393,7 @@ def load_csv(path: Path, name: str) -> pd.DataFrame | None:
 
 
 def main() -> None:
-    """
-    CLI entry point for generating all paper figures from analysis CSVs.
-
-    Assumptions:
-    - Missing CSVs should skip only the figures that require them.
-    """
+    """Generate all paper figures from analysis CSVs, skipping figures with missing inputs."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--analysis-dir", type=Path, default=Path("analysis"),
                         help="Directory containing CSVs from analyze.py")

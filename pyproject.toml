@@ -8,5 +8,8 @@ version = "0.1.0"
 requires-python = ">=3.12"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["common*", "preprocess*"]
+where = ["src"]
+include = ["csmath*", "common*", "audio*", "rf*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
