@@ -1,12 +1,12 @@
-# Compressive-Augmentation for View-Based Learning 
+# Compressive-Augmentation for View-Based Learning
 
-## Abstract 
+## Abstract
 
-We study whether classical compressive sensing methods can provide effective augmentations for learning semantically meaningful music-genre representations. We use the "FMA small" dataset, a collection of 8,000, 30-second clips from songs split evenly across 8 genres. Augmentation is applied directly to waveforms, then converted to mel-spectrogram for encoding and projection onto a Barlow Twins objective. Compressive style augmentation beats and is competitive with traditional augmentation on downstream linear F1-macro as well as exhibits stronger between-view alignment. Furthermore we show against a supervised reference manifold that higher magnitude nuisance perturbation corresponds to higher F1-macro scores. 
+We study whether classical compressive sensing methods can provide effective augmentations for learning semantically meaningful music-genre representations. We use the "FMA small" dataset, a collection of 8,000, 30-second clips from songs split evenly across 8 genres. Augmentation is applied directly to waveforms, then converted to mel-spectrogram for encoding and projection onto a Barlow Twins objective. Compressive style augmentation beats and is competitive with traditional augmentation on downstream linear F1-macro as well as exhibits stronger between-view alignment. Furthermore we show against a supervised reference manifold that higher magnitude nuisance perturbation corresponds to higher F1-macro scores.
 
-## Repository 
+## Repository
 
-This repository defines the training, analysis, and visualization that defines the experiments outlined in my ENGS109 (Compressive-Sensing) project. Instructions below define how to use the repository in a general sense, but the `.sbatch` scripts assume you have access to Dartmouth College's discovery cluster (specifically their H200s). 
+This repository defines the training, analysis, and visualization that defines the experiments outlined in my ENGS109 (Compressive-Sensing) project. Instructions below define how to use the repository in a general sense, but the SLURM scripts under `scripts/` assume you have access to Dartmouth College's Discovery cluster (specifically their H200s).
 
 ## Results
 
@@ -55,7 +55,7 @@ Top-5 test F1-macro point estimates.
 | 5 | DCT-U r20 | 0.437 | 0.553 |
 | -- | Mel PCA-256 | 0.369 | 0.511 |
 
-## Figures 
+## Figures
 
 Test F1-Macro 95% Confidence Intervals versus Measurement Ratio m/N
 
@@ -71,11 +71,31 @@ random seed uncertainty for each x-axis value
 
 ![Alignment and Uniformity against Test F1-macro](images/alignment_vs_f1.png)
 
-# Usage
+## Repository Structure
 
-## Setup
+```
+src/
+  csmath/       # domain-agnostic CS operators and losses (DCT, SRHT, Barlow, SupCon)
+  common/       # abstract base classes and shared utilities (BaseBarlowDataset, set_seed)
+  audio/        # FMA audio encoder, dataset classes, augmentation policies, preprocessing
+    preprocess/ # decode_audio, manifests, mel tensor generation
+  rf/           # stub; RF/AMC domain code lives here in future branches
+scripts/
+  ingest_fma.sh       # download + decode + manifest + optional mel for FMA Small
+  ingest_rml2016.sh   # stub with manual download instructions for RML2016.10a
+  run_train.sbatch    # SLURM job: full training sweep across two H200s
+  run_analyze.sbatch  # SLURM job: embedding analysis on one H200
+tests/
+  csmath/   # DCT round-trip, energy conservation, WHT involutory, SRHT NaN sweep, loss invariants
+  audio/    # encoder shape, NaN, CPU/CUDA parity, gradient flow
+train.py    # training entry point
+analyze.py  # post-training analysis entry point
+plot.py     # figure generation entry point
+```
 
-Install Python dependencies and make sure `ffmpeg` is available on `PATH`.
+## Usage
+
+### Setup
 
 ```bash
 python -m venv .venv
@@ -84,72 +104,76 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-## Data
+Requires `ffmpeg` on `PATH`.
 
-Place FMA audio and metadata under `preprocess/data/`:
+### Data
 
-```text
-preprocess/data/fma_small/
-preprocess/data/tracks.csv
-```
-
-or:
-
-```text
-preprocess/data/fma_small/
-preprocess/data/fma_metadata/tracks.csv
-```
-
-Predecode audio and generate mel manifests:
+Download and preprocess FMA Small with the ingest script:
 
 ```bash
-python -m preprocess.decode_audio -d preprocess/data/fma_small
-python -m preprocess.mel -d preprocess/data/fma_small --sample-images
+bash scripts/ingest_fma.sh data/
 ```
 
-## Train
+This downloads FMA Small audio and metadata (~8 GB), decodes mp3s to `.npy`, and writes split manifests to `data/fma_small_mel/`. Pass `--mel` to also generate mel-spectrogram tensors (required only for the mel-PCA analysis baseline).
 
-Run both halves for the full sweep:
+Data layout after ingest:
+
+```text
+data/
+  fma_small/          # mp3s + decoded .npy files
+  fma_metadata/       # tracks.csv
+  fma_small_mel/      # manifest_*.csv (+ *.pt tensors if --mel was passed)
+```
+
+### Tests
+
+```bash
+.venv/bin/python -m pytest tests/ -v
+```
+
+Tests run on both CPU and CUDA (CUDA skipped automatically if unavailable).
+
+### Train
 
 ```bash
 python train.py --half 0 --scratch-dir . \
-  --data-dir preprocess/data/fma_small_mel \
-  --audio-root preprocess/data
+  --data-dir data/fma_small_mel \
+  --audio-root data
 
 python train.py --half 1 --scratch-dir . \
-  --data-dir preprocess/data/fma_small_mel \
-  --audio-root preprocess/data
+  --data-dir data/fma_small_mel \
+  --audio-root data
 ```
 
-On SLURM, use:
+On SLURM (Discovery cluster):
 
 ```bash
-sbatch run_train.sbatch
+sbatch scripts/run_train.sbatch
 ```
 
-To run only selected families, add `--kinds`, for example:
+To run only selected families:
 
 ```bash
-python train.py --half 0 --scratch-dir . --kinds supcon traditional
+python train.py --half 0 --scratch-dir . --kinds cs_biased cs_uniform cs_srht
 ```
 
-## Analyze
+### Analyze
 
 ```bash
 python analyze.py \
   --parquet data/wave_barlow_fma_small.parquet \
   --output-dir analysis \
   --checkpoint-dir checkpoints \
-  --audio-root preprocess/data/fma_small_mel
+  --audio-root data/fma_small_mel
 ```
 
-On SLURM, use:
+On SLURM:
 
 ```bash
-sbatch run_analyze.sbatch
+sbatch scripts/run_analyze.sbatch
 ```
 
-## Plot
+### Plot
 
 ```bash
 python plot.py --analysis-dir analysis --output-dir images
@@ -166,7 +190,7 @@ python plot.py --analysis-dir analysis --output-dir images
 
 This dataset was made possible by the work of Defferrard et al. If you use FMA downstream, credit the original dataset authors:
 
-> Michaël Defferrard, Kirell Benzi, Pierre Vandergheynst, Xavier Bresson.  
-> **"FMA: A Dataset for Music Analysis"**  
-> *18th International Society for Music Information Retrieval Conference (ISMIR), 2017.*  
+> Michaël Defferrard, Kirell Benzi, Pierre Vandergheynst, Xavier Bresson.
+> **"FMA: A Dataset for Music Analysis"**
+> *18th International Society for Music Information Retrieval Conference (ISMIR), 2017.*
 > [Official FMA GitHub Repository](https://github.com/mdeff/fma)
