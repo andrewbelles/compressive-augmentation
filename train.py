@@ -70,12 +70,7 @@ WAVE_AUGMENT = {
 
 @dataclass
 class RunSpec:
-    """
-    Describe one training/extraction run in the experimental sweep.
-
-    Assumptions:
-    - kind selects exactly one augmentation or sensing family.
-    """
+    """One training/extraction run in the experimental sweep."""
     kind:    str
     seed:    int
     ratio:   Optional[float] = None
@@ -85,12 +80,7 @@ class RunSpec:
 
 
 def build_run_list() -> list[RunSpec]:
-    """
-    Construct the full set of training runs for the current sweep.
-
-    Assumptions:
-    - SEEDS, RATIOS, and POLICIES define the canonical experiment grid.
-    """
+    """Construct the full set of training runs over the SEEDS/RATIOS/POLICIES grid."""
     runs = []
     for seed in SEEDS:
         for ratio in RATIOS:
@@ -106,12 +96,7 @@ def build_run_list() -> list[RunSpec]:
 
 
 def source_name(spec: RunSpec) -> str:
-    """
-    Map a run specification to the stable checkpoint/parquet method name.
-
-    Assumptions:
-    - Downstream analysis parses these names to recover family, ratio, and seed.
-    """
+    """Return the stable checkpoint/parquet method name for a run specification."""
     suffix = "_nopop"
     seed_tag = f"_s{spec.seed}"
     if spec.kind == "supcon":
@@ -125,12 +110,7 @@ def source_name(spec: RunSpec) -> str:
 
 
 def cosine_lr(epoch: int) -> float:
-    """
-    Compute the warmup plus cosine-decay learning rate for an epoch.
-
-    Assumptions:
-    - EPOCHS and WARMUP_EPOCHS define the full schedule length.
-    """
+    """Return the warmup-then-cosine-decay learning rate for the given epoch."""
     if epoch < WARMUP_EPOCHS:
         return PEAK_LR * (epoch + 1) / max(WARMUP_EPOCHS, 1)
     progress = (epoch - WARMUP_EPOCHS) / max(EPOCHS - WARMUP_EPOCHS, 1)
@@ -143,23 +123,13 @@ def set_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
 
 
 def cache_raw_on_gpu(dataset, device: torch.device) -> torch.Tensor:
-    """
-    Materialize all raw dataset crops as one tensor on the target device.
-
-    Assumptions:
-    - The dataset has been configured to return raw waveform crops.
-    """
+    """Materialize all raw dataset crops as a single tensor on device."""
     tensors = [dataset[i][0] for i in range(len(dataset))]
     return torch.stack(tensors).to(device)
 
 
 def cache_supcon_on_gpu(dataset, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Materialize all SupCon raw crops and labels on the target device.
-
-    Assumptions:
-    - The dataset has been configured to return raw waveform crops and labels.
-    """
+    """Materialize all SupCon raw crops and integer labels as tensors on device."""
     waveforms, labels = [], []
     for i in range(len(dataset)):
         y, lbl = dataset[i]
@@ -173,12 +143,7 @@ def _make_gen(device: torch.device, seed: int) -> torch.Generator:
 
 
 def _clone_state(model: nn.Module) -> dict:
-    """
-    Clone a CPU checkpoint state from regular or torch.compile-wrapped modules.
-
-    Assumptions:
-    - Compiled modules expose their original module through _orig_mod.
-    """
+    """Clone a detached CPU state dict from a regular or torch.compile-wrapped module."""
     src = getattr(model, "_orig_mod", model)
     return {k: v.detach().cpu().clone() for k, v in src.state_dict().items()}
 
@@ -186,12 +151,7 @@ def _clone_state(model: nn.Module) -> dict:
 def run_barlow_epoch(
     model, raw: torch.Tensor, optimizer, scaler, device, spec: RunSpec, epoch: int, train: bool,
 ) -> dict:
-    """
-    Run one full-batch Barlow Twins train or validation epoch.
-
-    Assumptions:
-    - raw already fits on device and view generation is deterministic from epoch.
-    """
+    """Run one full-batch Barlow Twins train or validation epoch."""
     model.train(train)
     ctx = torch.enable_grad if train else torch.no_grad
     with ctx():
@@ -222,12 +182,7 @@ def run_supcon_epoch(
     encoder, proj, raw: torch.Tensor, labels: torch.Tensor,
     optimizer, scaler, device, epoch: int, train: bool,
 ) -> float:
-    """
-    Run one full-batch SupCon train or validation epoch.
-
-    Assumptions:
-    - raw and labels already fit on device and labels align with waveform rows.
-    """
+    """Run one full-batch SupCon train or validation epoch."""
     encoder.train(train)
     proj.train(train)
     ctx = torch.enable_grad if train else torch.no_grad
@@ -254,12 +209,7 @@ def train_barlow(
     checkpoint_dir: Path,
     device: torch.device,
 ) -> Path:
-    """
-    Train one Barlow-style encoder and save the best validation checkpoint.
-
-    Assumptions:
-    - Predecoded waveforms and split manifests are available under the provided roots.
-    """
+    """Train one Barlow-style encoder and save the best-validation checkpoint."""
     source    = source_name(spec)
     ckpt_path = checkpoint_dir / f"{source}_{DATASET_NAME}.pt"
     if ckpt_path.exists():
@@ -367,12 +317,7 @@ def train_supcon(
     checkpoint_dir: Path,
     device: torch.device,
 ) -> Path:
-    """
-    Train one supervised contrastive encoder and save the best validation checkpoint.
-
-    Assumptions:
-    - Genre labels in the manifest are the intended supervised classes.
-    """
+    """Train one supervised contrastive encoder and save the best-validation checkpoint."""
     source    = source_name(spec)
     ckpt_path = checkpoint_dir / f"{source}_{DATASET_NAME}.pt"
     if ckpt_path.exists():
@@ -472,12 +417,7 @@ def extract(
     device: torch.device,
     config: dict,
 ) -> None:
-    """
-    Append embeddings for a completed run to the consolidated parquet if needed.
-
-    Assumptions:
-    - source_name(spec) matches the checkpoint payload source_name.
-    """
+    """Append embeddings for a completed run to the consolidated parquet if not already present."""
     source   = source_name(spec)
     out_path = output_dir / f"wave_barlow_{DATASET_NAME}.parquet"
     if out_path.exists():
@@ -492,12 +432,7 @@ def extract(
 
 
 def main() -> None:
-    """
-    Run the assigned half of the training sweep and extract embeddings.
-
-    Assumptions:
-    - Two worker processes split the same ordered run list by even and odd indices.
-    """
+    """Run the assigned half of the training sweep and extract embeddings."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--half",        type=int, required=True, choices=[0, 1])
     parser.add_argument("--scratch-dir", type=Path, required=True)

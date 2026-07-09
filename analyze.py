@@ -57,12 +57,7 @@ def emb_cols(df: pd.DataFrame) -> list[str]:
 
 
 def parse_method(method: str) -> tuple[str, int | None]:
-    """
-    Parse a method name into analysis family and compression ratio.
-
-    Assumptions:
-    - Method names follow the source_name convention from train.py.
-    """
+    """Parse a method name into analysis family and compression ratio."""
     base = re.sub(r"_s\d+$", "", method)
     m    = re.search(r"_r0?(\d+)", base)
     ratio = int(m.group(1)) if m else None
@@ -80,12 +75,7 @@ def method_base(method: str) -> str:
 
 
 def method_label(method: str) -> str:
-    """
-    Create a compact display label for a method or method base.
-
-    Assumptions:
-    - Labels are used for plots and CSV summaries, not for identity.
-    """
+    """Return a compact display label for a method or method base."""
     base   = method_base(method)
     simple = {
         "raw_mel_pca256":                    "Mel PCA-256",
@@ -106,12 +96,7 @@ def method_label(method: str) -> str:
 
 
 def split_xy(df: pd.DataFrame, cols: list[str], exclude_genres=None):
-    """
-    Build feature and label arrays for each split from one method dataframe.
-
-    Assumptions:
-    - The training split contains every class used by validation and test.
-    """
+    """Build feature and label arrays for each split from one method dataframe."""
     if exclude_genres:
         df = df[~df["genre_top"].isin(exclude_genres)]
     df = df.dropna(subset=["genre_top"])
@@ -127,12 +112,7 @@ def split_xy(df: pd.DataFrame, cols: list[str], exclude_genres=None):
 
 
 def gpu_macro_f1(y_true: torch.Tensor, y_pred: torch.Tensor, n_classes: int) -> torch.Tensor:
-    """
-    Compute macro F1 on GPU from integer class tensors.
-
-    Assumptions:
-    - Class ids are contiguous from zero to n_classes minus one.
-    """
+    """Compute macro-averaged F1 on GPU from integer class tensors."""
     f1s = torch.zeros(n_classes, device=y_true.device)
     for c in range(n_classes):
         tp = ((y_pred == c) & (y_true == c)).sum().float()
@@ -147,12 +127,7 @@ def gpu_boot_f1(
     y_true: torch.Tensor, y_pred: torch.Tensor, n_classes: int,
     n_boot: int = N_BOOT, seed: int = BOOT_SEED,
 ) -> torch.Tensor:
-    """
-    Bootstrap macro F1 by resampling examples on GPU.
-
-    Assumptions:
-    - y_true and y_pred are aligned and have at least one example.
-    """
+    """Return n_boot bootstrap macro-F1 samples by resampling examples on GPU."""
     n   = len(y_true)
     gen = torch.Generator(device=y_true.device).manual_seed(seed)
     idx = torch.randint(0, n, (n_boot, n), device=y_true.device, generator=gen)
@@ -169,12 +144,7 @@ def gpu_boot_f1(
 
 
 def probe_one(df: pd.DataFrame, device: torch.device, exclude_genres=None) -> dict:
-    """
-    Fit one linear probe with validation C selection and bootstrap intervals.
-
-    Assumptions:
-    - df contains one method across training, validation, and test splits.
-    """
+    """Fit one linear probe with validation C-grid selection and bootstrap confidence intervals."""
     cols = emb_cols(df)
     splits, le = split_xy(df, cols, exclude_genres)
     n_classes  = len(le.classes_)
@@ -238,12 +208,7 @@ def run_linear_analysis(
     exclude_genres=None,
     mel_data_dir: Optional[Path] = None,
 ) -> tuple[pd.DataFrame, dict[str, list[dict]]]:
-    """
-    Run linear-probe evaluation for each method base and summarize across seeds.
-
-    Assumptions:
-    - Method names ending in _sN are seed variants of the same base.
-    """
+    """Run linear-probe evaluation for each method base and aggregate across seeds."""
     print("\nLinear probe analysis", flush=True)
 
     groups: dict[str, dict] = {}
@@ -316,12 +281,7 @@ def run_linear_analysis(
 
 
 def load_mel_pca_df(data_dir: Path, pca_dim: int = MEL_PCA_DIM) -> pd.DataFrame:
-    """
-    Build a raw mel mean/std PCA baseline dataframe in embedding format.
-
-    Assumptions:
-    - data_dir is the mel tensor directory containing split manifests.
-    """
+    """Build a raw mel mean/std PCA baseline dataframe in embedding format."""
     frames: dict[str, list[dict]] = {sp: [] for sp in SPLITS}
     for split in SPLITS:
         manifest_path = data_dir / f"manifest_{split}.csv"
@@ -373,12 +333,7 @@ def run_comparison_ci(
     linear_df: pd.DataFrame,
     ref_families: set[str] = TRAD_FAMILIES,
 ) -> pd.DataFrame:
-    """
-    Compare each method to the best traditional baseline via bootstrap deltas.
-
-    Assumptions:
-    - Bootstrap arrays are aligned across methods by test-set row order.
-    """
+    """Compare each method to the best traditional baseline via paired bootstrap deltas."""
     print("\n Comparison CIs vs best traditional baseline ", flush=True)
 
     trad_rows = linear_df[linear_df["family"].isin(ref_families)]
@@ -442,24 +397,14 @@ def run_comparison_ci(
 
 
 def load_embeddings(df: pd.DataFrame, method_name: str, sp: str) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Load embeddings and labels for one exact method and split.
-
-    Assumptions:
-    - The input dataframe has complete embedding columns for the selected method.
-    """
+    """Return embedding matrix and genre labels for one exact method and split."""
     sub  = df[(df["method"] == method_name) & (df["split"] == sp)].dropna(subset=["genre_top"])
     cols = emb_cols(sub)
     return sub[cols].to_numpy(dtype=np.float32), sub["genre_top"].to_numpy()
 
 
 def load_embeddings_any_seed(df: pd.DataFrame, base_name: str, sp: str) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Load embeddings for the first available seed matching a method base.
-
-    Assumptions:
-    - Any seed is acceptable as the reference manifold for this analysis.
-    """
+    """Return embeddings for the first available seed matching a method base."""
     sub = df[(df["method"].str.startswith(base_name)) & (df["split"] == sp)].dropna(subset=["genre_top"])
     seed_methods = sub["method"].unique()
     if len(seed_methods) == 0:
@@ -470,12 +415,7 @@ def load_embeddings_any_seed(df: pd.DataFrame, base_name: str, sp: str) -> tuple
 
 
 def run_perturbation_analysis(df: pd.DataFrame, ref_method: str, split: str = "test") -> pd.DataFrame:
-    """
-    Measure CS embedding deviations in semantic and nuisance subspaces.
-
-    Assumptions:
-    - Selected methods share the same track order as the reference embeddings.
-    """
+    """Measure CS embedding deviations in LDA semantic and orthogonal nuisance subspaces."""
     print(f"\nPerturbation analysis (ref={ref_method}, split={split})", flush=True)
 
     X_ref_tr, y_ref_tr = load_embeddings_any_seed(df, ref_method, "training")
@@ -541,12 +481,7 @@ def run_perturbation_analysis(df: pd.DataFrame, ref_method: str, split: str = "t
 
 
 def uniformity_gpu(Z: torch.Tensor, t: float = 2.0, max_n: int = 2048) -> float:
-    """
-    Estimate representation uniformity from pairwise normalized distances.
-
-    Assumptions:
-    - Z is already normalized or should be interpreted in its current scale.
-    """
+    """Estimate representation uniformity via pairwise Gaussian kernel on unit sphere."""
     n = Z.shape[0]
     if n > max_n:
         idx = torch.randperm(n, device=Z.device)[:max_n]
@@ -557,12 +492,7 @@ def uniformity_gpu(Z: torch.Tensor, t: float = 2.0, max_n: int = 2048) -> float:
 
 
 def load_encoder(ckpt_path: Path, device: torch.device):
-    """
-    Load a checkpoint encoder for alignment and uniformity analysis.
-
-    Assumptions:
-    - The checkpoint stores either a full Barlow state or SupCon encoder state.
-    """
+    """Load a checkpoint encoder onto device for alignment and uniformity analysis."""
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     mc   = ckpt.get("model", {})
     enc  = AudioSTFTEncoder(
@@ -591,12 +521,7 @@ WAVE_AUG_CONFIG = {
 def augment_for_method(
     raw: torch.Tensor, base: str, epoch_seed: int, view_idx: int, device: torch.device,
 ) -> torch.Tensor:
-    """
-    Regenerate the augmentation family implied by a method base.
-
-    Assumptions:
-    - base can be parsed by parse_method or contains a w2/w3/w4 policy tag.
-    """
+    """Regenerate the augmentation view implied by a method base name."""
     gen      = torch.Generator(device=device).manual_seed(epoch_seed * 1000 + view_idx)
     g, ratio = parse_method(base)
     ratio_f  = float(ratio) if ratio is not None else 80.0
@@ -621,12 +546,7 @@ def run_alignment_analysis(
     device: Optional[torch.device] = None,
     n_aug_epochs: int = 4,
 ) -> pd.DataFrame:
-    """
-    Compute between-view alignment and uniformity for each method base.
-
-    Assumptions:
-    - audio_root is the mel manifest directory whose parent contains raw .npy audio.
-    """
+    """Compute between-view alignment and uniformity for each method base."""
     print(f"\nAlignment analysis (split={split})", flush=True)
 
     has_gpu = (checkpoint_dir is not None and audio_root is not None and checkpoint_dir.is_dir())
@@ -736,12 +656,7 @@ def run_alignment_analysis(
 
 
 def main() -> None:
-    """
-    Run selected analyses from the consolidated embedding parquet.
-
-    Assumptions:
-    - The parquet contains all embedding columns and method metadata.
-    """
+    """Run selected analyses from the consolidated embedding parquet."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--parquet",        type=Path, default=Path("data/wave_barlow_fma_small.parquet"))
     parser.add_argument("--output-dir",     type=Path, default=Path("analysis"))
