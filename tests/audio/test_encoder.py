@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -65,12 +66,11 @@ class TestAudioSTFTEncoder:
         out = enc(_wave(device))
         assert torch.isfinite(out).all()
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="no cuda")
     def test_cpu_cuda_parity(self):
-        if not torch.cuda.is_available():
-            return
-        x    = torch.randn(B, 1, T)
-        cpu  = _encoder(torch.device("cpu"))
-        gpu  = _encoder(torch.device("cuda"))
+        x   = torch.randn(B, 1, T)
+        cpu = _encoder(torch.device("cpu"))
+        gpu = _encoder(torch.device("cuda"))
         gpu.load_state_dict(cpu.state_dict())
         with torch.no_grad():
             out_cpu = cpu(x)
