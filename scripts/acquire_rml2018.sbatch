@@ -2,7 +2,7 @@
 #SBATCH --job-name=rml2018-acquire
 #SBATCH --account=free
 #SBATCH --partition=standard
-#SBATCH --time=2:00:00
+#SBATCH --time=4:00:00
 #SBATCH --mem=48G
 #SBATCH --cpus-per-task=8
 #SBATCH --output=logs/rml2018-acquire_%j.out
@@ -13,22 +13,29 @@
 #
 # SLURM job for acquiring and indexing RadioML 2018.01A on Dartmouth Discovery.
 #
-# This job assumes the HDF5 file has already been transferred to scratch.
-# Typical workflow:
+# Preferred workflow (direct download on-cluster, requires compute-node
+# internet egress -- confirmed available via `curl -sI https://www.kaggle.com`
+# from an srun session):
 #
-#   1. Run locally to download and compress:
-#        bash scripts/ingest_rml2018.sh data/ --compress
+#   1. Put Kaggle credentials on Discovery (not in the repo):
+#        scp kaggle.json $USER@discovery.dartmouth.edu:~/.kaggle/kaggle.json
+#        ssh $USER@discovery.dartmouth.edu chmod 600 ~/.kaggle/kaggle.json
 #
-#   2. Transfer the archive to Discovery scratch:
-#        rsync -avz --progress \
-#            data/rml2018/rml2018.hdf5.zst \
-#            $USER@discovery.dartmouth.edu:/dartfs-hpc/scratch/$USER/compressive-augmentation/data/rml2018/
+#   2. Make sure `kaggle` is installed in the CONDA_ENV below
+#        (conda activate compressive-augmentation && pip install kaggle)
 #
-#   3. Submit this job to decompress and write manifests:
+#   3. Submit this job -- it downloads, decompresses (if needed), and writes
+#      manifests in one step:
 #        sbatch scripts/acquire_rml2018.sbatch
 #
-# Alternatively, if Kaggle credentials are configured on Discovery, this job
-# can run the full ingest_rml2018.sh directly (step 1 above on the cluster).
+# Fallback workflow (no compute-node egress): download+compress locally,
+# rsync the archive to scratch, then submit this job to decompress instead:
+#
+#   1. bash scripts/ingest_rml2018.sh data/ --compress
+#   2. rsync -avz --progress \
+#          data/rml2018/rml2018.hdf5.zst \
+#          $USER@discovery.dartmouth.edu:/dartfs-hpc/scratch/$USER/compressive-augmentation/data/rml2018/
+#   3. sbatch scripts/acquire_rml2018.sbatch
 
 set -euo pipefail
 export PYTHONUNBUFFERED=1
@@ -49,21 +56,18 @@ mkdir -p "$RML_DIR" "$REPO/logs"
 echo "START rml2018-acquire node=$(hostname) $(date -Iseconds)"
 
 # ---------------------------------------------------------------------------
-# Decompress zstd archive if HDF5 not yet present
+# Acquire HDF5: decompress a pre-staged archive, or download directly
 # ---------------------------------------------------------------------------
 if [ -f "$HDF5" ]; then
-    echo "HDF5 already present, skipping decompression"
+    echo "HDF5 already present, skipping acquisition"
 elif [ -f "$ARCHIVE" ]; then
     echo "Decompressing $ARCHIVE (threads=8) ..."
     module load zstd 2>/dev/null || true
     zstd -d -T8 "$ARCHIVE" -o "$HDF5"
     echo "Decompression complete: $(du -sh "$HDF5" | cut -f1)"
 else
-    echo "Neither HDF5 nor zstd archive found at $RML_DIR" >&2
-    echo "Options:" >&2
-    echo "  A) rsync rml2018.hdf5.zst from local machine (see script header)" >&2
-    echo "  B) Run ingest_rml2018.sh directly if Kaggle credentials are available on Discovery" >&2
-    exit 1
+    echo "No local HDF5 or archive found -- downloading directly from Kaggle ..."
+    bash "$REPO/scripts/ingest_rml2018.sh" "$DATA_DIR" -j 8
 fi
 
 # ---------------------------------------------------------------------------
