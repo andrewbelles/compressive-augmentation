@@ -63,7 +63,7 @@ def load_hdf5_index(hdf5_path: Path) -> list[dict]:
             f"expected {len(MOD_CLASSES)} modulation classes, got {Y.shape[1]}"
         )
     mod_indices = np.argmax(Y, axis=1)
-    snrs        = Z.astype(np.int32)
+    snrs        = Z.reshape(-1).astype(np.int32)
     rows = []
     for i in range(n):
         rows.append({

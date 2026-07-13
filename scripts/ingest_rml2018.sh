@@ -156,7 +156,7 @@ with h5py.File(hdf5_path, "r") as f:
     frame_last = f["X"][-1]
 assert x_shape == (2555904, 1024, 2), f"unexpected X shape: {x_shape}"
 assert y_shape == (2555904, 24),      f"unexpected Y shape: {y_shape}"
-assert z_shape == (2555904,),         f"unexpected Z shape: {z_shape}"
+assert z_shape in [(2555904,), (2555904, 1)], f"unexpected Z shape: {z_shape}"
 assert np.isfinite(frame_0).all(),    "NaN/Inf in frame 0"
 assert np.isfinite(frame_last).all(), "NaN/Inf in final frame"
 print(f"[prefetch-check] OK  X={x_shape} Y={y_shape} Z={z_shape}")
