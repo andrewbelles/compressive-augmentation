@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -156,7 +157,14 @@ def get_or_build_dictionary(
         else:
             d = build_v3(x, labels, atoms_per_class, ksvd_sparsity, lc_alpha, ksvd_iters, gen)
 
-    tmp = cache_path.with_suffix(".pt.tmp")
+    # Unique per-process tmp path: two --half workers can race to build the same
+    # variant concurrently, and a shared tmp filename lets the loser's rename
+    # crash with FileNotFoundError once the winner has already claimed it.
+    tmp = cache_path.with_suffix(f".pt.tmp.{os.getpid()}")
     torch.save({"atoms": d.atoms, "atom_labels": d.atom_labels, "variant": d.variant}, tmp)
+    if cache_path.exists():
+        tmp.unlink()
+        payload = torch.load(cache_path, map_location=device, weights_only=True)
+        return Dictionary(payload["atoms"], payload["atom_labels"], payload["variant"])
     tmp.rename(cache_path)
     return d
