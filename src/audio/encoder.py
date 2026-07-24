@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torchaudio.functional as AF
 
-from csmath.losses import barlow_twins_loss  # noqa: F401 re-exported for train.py convenience
+from dsp.losses import barlow_twins_loss  # noqa: F401 re-exported for train.py convenience
 
 EPS = 1e-12
 

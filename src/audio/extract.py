@@ -7,7 +7,7 @@ import torch
 from audio.dataset import load_manifest, load_waveform
 from audio.encoder import AudioBarlowModel, AudioSTFTEncoder
 from common.extract import write_frames_to_parquet
-from csmath.losses import supcon_loss  # noqa: F401
+from dsp.losses import supcon_loss  # noqa: F401
 
 SPLITS = ("training", "validation", "test")
 

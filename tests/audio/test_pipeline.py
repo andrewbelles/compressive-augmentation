@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from audio.encoder import AudioBarlowModel, AudioSTFTEncoder
 from common.dataset import BaseBarlowDataset
-from csmath.losses import barlow_twins_loss
+from dsp.losses import barlow_twins_loss
 from train import (
     BARLOW_LAMBDA,
     EPOCHS,

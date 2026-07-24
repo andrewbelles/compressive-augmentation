@@ -3,14 +3,14 @@ import math
 import pytest
 import torch
 
-from csmath.cs import (
+from dsp.cs import (
     _gpu_dct_batch,
     _gpu_idct_batch,
     _gpu_wht_batch,
     gpu_dct_cs_view_batch,
     gpu_srht_batch,
 )
-from csmath.losses import barlow_twins_loss, off_diagonal, supcon_loss
+from dsp.losses import barlow_twins_loss, off_diagonal, supcon_loss
 
 B = 4
 T = 512

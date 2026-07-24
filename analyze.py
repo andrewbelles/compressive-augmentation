@@ -40,7 +40,7 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from audio.dataset import load_manifest
 from audio.encoder import AudioSTFTEncoder
 from audio.augment import gpu_wave_policy_batch
-from csmath.cs import gpu_dct_cs_view_batch, gpu_srht_batch
+from dsp.cs import gpu_dct_cs_view_batch, gpu_srht_batch
 
 
 SPLITS         = ("training", "validation", "test")

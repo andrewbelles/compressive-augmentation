@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["csmath*", "common*", "audio*", "rf*"]
+include = ["dsp*", "common*", "audio*", "rf*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

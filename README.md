@@ -75,23 +75,32 @@ random seed uncertainty for each x-axis value
 
 ```
 src/
-  csmath/       # domain-agnostic CS operators and losses (DCT, SRHT, Barlow, SupCon)
+  dsp/          # single source of truth for CS math and DSP (operators, frames, recovery, SE, cumulants, DCT/SRHT views, losses)
   common/       # abstract base classes and shared utilities (BaseBarlowDataset, set_seed)
   audio/        # FMA audio encoder, dataset classes, augmentation policies, preprocessing
     preprocess/ # decode_audio, manifests, mel tensor generation
-  rf/           # stub; RF/AMC domain code lives here in future branches
+  rf/           # RF/AMC domain: data loader, signal model, and first-stage hypothesis drivers
+    preprocess/ # rml2018 manifest indexing
+    hypotheses/ # mechanism-named Stage-1 hypothesis drivers over dsp + real data
 scripts/
-  ingest_fma.sh       # download + decode + manifest + optional mel for FMA Small
-  ingest_rml2016.sh   # stub with manual download instructions for RML2016.10a
-  run_train.sbatch    # SLURM job: full training sweep across two H200s
-  run_analyze.sbatch  # SLURM job: embedding analysis on one H200
+  ingest_fma.sh          # download + decode + manifest + optional mel for FMA Small
+  ingest_rml2018.sh      # download + index RadioML 2018.01A
+  acquire_rml2018.sbatch # SLURM job: acquire and index rml2018 on Discovery
+  run_train.sbatch       # SLURM job: full training sweep across two H200s
+  run_hypotheses.sbatch  # SLURM array: Stage-1 hypothesis battery over seeds
+  report_hypotheses.sbatch # SLURM job: aggregate hypothesis verdicts
 tests/
-  csmath/   # DCT round-trip, energy conservation, WHT involutory, SRHT NaN sweep, loss invariants
-  audio/    # encoder shape, NaN, CPU/CUDA parity, gradient flow
-train.py    # training entry point
-analyze.py  # post-training analysis entry point
-plot.py     # figure generation entry point
+  dsp/    # operator isometry, frame tightness, recovery, state evolution, cumulants, DCT/SRHT, losses
+  rf/     # manifest splits, frame loader, hypothesis drivers and null rejection
+  audio/  # encoder shape, NaN, CPU/CUDA parity, gradient flow
+train.py            # audio training entry point
+analyze.py          # audio post-training analysis entry point
+plot.py             # figure generation entry point
+run_hypotheses.py   # run one first-stage hypothesis on rml2018
+report_hypotheses.py # aggregate hypotheses into accept/reject verdicts
 ```
+
+See `docs/discovery-hpc-usage.md` for the full Discovery workflow.
 
 ## Usage
 

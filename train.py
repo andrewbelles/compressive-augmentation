@@ -28,8 +28,8 @@ from audio.dataset import WaveBarlowDataset, WaveABTDataset, SupConDataset
 from audio.encoder import AudioBarlowModel, AudioSTFTEncoder, barlow_twins_loss
 from audio.augment import gpu_wave_policy_batch
 from audio.extract import extract_embeddings, extract_supcon_embeddings
-from csmath.cs import gpu_dct_cs_view_batch, gpu_srht_batch
-from csmath.losses import supcon_loss
+from dsp.cs import gpu_dct_cs_view_batch, gpu_srht_batch
+from dsp.losses import supcon_loss
 from common.utils import set_seed
 
 

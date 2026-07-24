@@ -8,7 +8,7 @@ import torch
 from scipy.fft import dct, idct
 
 from common.dataset import BaseBarlowDataset
-from csmath.cs import gpu_dct_cs_view_batch, gpu_srht_batch, _get_dct_probs  # noqa: F401
+from dsp.cs import gpu_dct_cs_view_batch, gpu_srht_batch, _get_dct_probs  # noqa: F401
 from audio.augment import apply_wave_policy
 
 
