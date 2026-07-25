@@ -55,3 +55,11 @@ def to_dense(op: ConvOperator) -> torch.Tensor:
     """Materialize Phi as an (m, n) complex matrix by measuring the identity."""
     eye = torch.eye(op.n, dtype=torch.complex64, device=op.theta.device)
     return measure(eye, op).transpose(-1, -2).contiguous()
+
+
+def mutual_coherence(a: torch.Tensor) -> float:
+    """Largest normalized inner product between distinct columns of a."""
+    cols = a / a.norm(dim=0, keepdim=True).clamp_min(1e-12)
+    gram = (cols.conj().transpose(-1, -2) @ cols).abs()
+    gram.fill_diagonal_(0.0)
+    return gram.max().item()

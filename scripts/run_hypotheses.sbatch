@@ -49,8 +49,9 @@ test -f "$MANIFEST" || { echo "FATAL: missing $MANIFEST (run acquire_rml2018.sba
 
 echo "START hypotheses seed=$SEED node=$(hostname) $(date -Iseconds)"
 
-for MECH in operator_isometry nuisance_equivariance gabor_compressibility \
-            se_calibration structure_vs_unstructured cumulant_margin admissible_band; do
+for MECH in operator_isometry backprojection_law nuisance_equivariance \
+            dictionary_compressibility se_calibration operator_draw_variance \
+            cumulant_margin label_nuisance_tradeoff admissible_band; do
     echo "--- $MECH seed=$SEED ---"
     PYTHONPATH=src python run_hypotheses.py \
         --mechanism "$MECH" \
@@ -58,7 +59,8 @@ for MECH in operator_isometry nuisance_equivariance gabor_compressibility \
         --hdf5 "$HDF5" \
         --manifest "$MANIFEST" \
         --out "$ARTIFACTS" \
-        --per-group 64
+        --per-group 64 \
+        --draws 64
 done
 
 echo "DONE hypotheses seed=$SEED $(date -Iseconds)"

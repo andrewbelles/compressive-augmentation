@@ -27,36 +27,39 @@ def _hann(length: int, device) -> torch.Tensor:
     return torch.sin(math.pi * (k + 0.5) / length) ** 2
 
 
-def gabor_frame(n: int, gamma: int = 2, device=None) -> Frame:
-    """Build an exactly tight Gabor frame with gamma time shifts and n frequency channels."""
-    if n % gamma != 0:
-        raise ValueError(f"n={n} must be divisible by gamma={gamma}")
+def gabor_frame(n: int, window: int, hop: int, n_freq: int = None, device=None) -> Frame:
+    """Build an exactly tight Gabor frame from window length, hop, and frequency channels."""
+    n_freq = n_freq or window
+    if n % hop != 0:
+        raise ValueError(f"n={n} must be divisible by hop={hop}")
+    if hop > window:
+        raise ValueError(f"hop={hop} must not exceed window={window} or the lattice leaves gaps")
+    if n_freq < window:
+        raise ValueError(f"n_freq={n_freq} must be at least window={window} for tightness")
+    if window > n:
+        raise ValueError(f"window={window} must not exceed n={n}")
     device = device or torch.device("cpu")
-    a = n // gamma
+    shifts = n // hop
     idx = torch.arange(n, device=device)
-    base = _hann(min(n, 2 * a), device)
-    shifts = torch.zeros(gamma, n, device=device)
-    for k in range(gamma):
-        placed = torch.zeros(n, device=device)
-        pos = (idx[: base.numel()] + k * a) % n
-        placed[pos] = base
-        shifts[k] = placed
-    norm = shifts.pow(2).sum(dim=0).clamp_min(1e-12).sqrt()
-    win = shifts / norm
-    freqs = torch.exp(2j * math.pi * torch.outer(idx.float(), idx.float()) / n)
-    scale = math.sqrt(gamma / n)
-    cols = []
-    for k in range(gamma):
-        cols.append(scale * win[k].to(torch.complex64).unsqueeze(1) * freqs)
-    d = torch.cat(cols, dim=1)
-    return Frame(d, n, gamma * n, float(gamma))
+    base = _hann(window, device)
+    placed = torch.zeros(shifts, n, device=device)
+    for j in range(shifts):
+        placed[j, (idx[:window] + j * hop) % n] = base
+    win = placed / placed.pow(2).sum(dim=0).clamp_min(1e-12).sqrt()
+    ramp = torch.arange(n_freq, device=device)
+    phase = torch.outer(idx, ramp) % n_freq  # reduce before exp: float32 loses precision past ~1e3 rad
+    freqs = torch.exp(2j * math.pi * phase.float() / n_freq)
+    scale = 1.0 / math.sqrt(hop)  # makes DD* = (n_freq/hop) I
+    cols = [scale * win[j].to(torch.complex64).unsqueeze(1) * freqs for j in range(shifts)]
+    return Frame(torch.cat(cols, dim=1), n, shifts * n_freq, n_freq / hop)
 
 
 def dft_frame(n: int, device=None) -> Frame:
     """Build the orthonormal DFT frame (gamma=1), whose supports are contiguous bands."""
     device = device or torch.device("cpu")
-    idx = torch.arange(n, device=device).float()
-    d = torch.exp(2j * math.pi * torch.outer(idx, idx) / n) / math.sqrt(n)
+    idx = torch.arange(n, device=device)
+    phase = (torch.outer(idx, idx) % n).float()
+    d = torch.exp(2j * math.pi * phase / n) / math.sqrt(n)
     return Frame(d.to(torch.complex64), n, n, 1.0)
 
 

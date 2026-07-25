@@ -3,10 +3,13 @@ import torch
 from dsp.frames import gabor_frame, synthesis, analysis
 from dsp.operators import random_convolution, measure, backproject
 from dsp.recovery import (
+    apply_A,
+    apply_AH,
     complex_soft_threshold,
     lasso_fista,
     oamp,
     reconstruct,
+    soft_threshold_divergence,
 )
 
 N = 96
@@ -47,17 +50,34 @@ class TestSoftThreshold:
 
 class TestRecovery:
     def test_both_recover_planted_sparse(self, device):
-        frame = gabor_frame(N, GAMMA, device=device)
+        frame = gabor_frame(N, N, N // 2, device=device)
         op = random_convolution(N, round(0.8 * N), _gen(device, 1), device=device)
         alpha = _planted(device, frame.n_atoms)
         x = synthesis(alpha, frame)
         y = measure(x, op)
-        assert _snr_db(x, reconstruct(oamp(y, op, frame), frame)) > 12.0
+        assert _snr_db(x, reconstruct(oamp(y, op, frame), frame)) > 40.0
         assert _snr_db(x, reconstruct(lasso_fista(y, op, frame, lam=0.02, iters=400), frame)) > 15.0
+
+    def test_oamp_reaches_high_snr_when_exactly_sparse(self, device):
+        # separates a signal-side compressibility floor from a solver that cannot converge
+        frame = gabor_frame(N, N, N // 2, device=device)
+        op = random_convolution(N, round(0.9 * N), _gen(device, 1), device=device)
+        x = synthesis(_planted(device, frame.n_atoms), frame)
+        assert _snr_db(x, reconstruct(oamp(measure(x, op), op, frame), frame)) > 40.0
+
+    def test_divergence_clamp_does_not_bind(self, device):
+        frame = gabor_frame(N, N, N // 2, device=device)
+        op = random_convolution(N, round(0.9 * N), _gen(device, 1), device=device)
+        y = measure(synthesis(_planted(device, frame.n_atoms), frame), op)
+        s = oamp(y, op, frame)
+        innov = apply_AH(y - apply_A(s, op, frame), op, frame)
+        tau = innov.abs().pow(2).mean(dim=-1, keepdim=True).clamp_min(1e-12).sqrt()
+        div = soft_threshold_divergence(s + innov, 1.6 * tau)
+        assert div.max().item() < 0.95
 
     def test_incompressible_recovers_worse(self, device):
         # null: white-noise frames are not sparse in the Gabor frame
-        frame = gabor_frame(N, GAMMA, device=device)
+        frame = gabor_frame(N, N, N // 2, device=device)
         op = random_convolution(N, round(0.5 * N), _gen(device, 1), device=device)
         alpha = _planted(device, frame.n_atoms)
         x_struct = synthesis(alpha, frame)
@@ -67,7 +87,7 @@ class TestRecovery:
         assert s - w > 8.0
 
     def test_solvers_agree_at_high_ratio(self, device):
-        frame = gabor_frame(N, GAMMA, device=device)
+        frame = gabor_frame(N, N, N // 2, device=device)
         op = random_convolution(N, round(0.9 * N), _gen(device, 1), device=device)
         alpha = _planted(device, frame.n_atoms)
         y = measure(synthesis(alpha, frame), op)
@@ -77,7 +97,7 @@ class TestRecovery:
         assert corr.item() > 0.9
 
     def test_backprojection_residual(self, device):
-        frame = gabor_frame(N, GAMMA, device=device)
+        frame = gabor_frame(N, N, N // 2, device=device)
         op = random_convolution(N, round(0.6 * N), _gen(device, 1), device=device)
         x = torch.randn(8, N, dtype=torch.complex64, device=device, generator=_gen(device, 2))
         # e = x - P x lies in the null space: measuring it gives zero
@@ -89,7 +109,7 @@ class TestDeviceParity:
     def test_oamp_cpu_cuda_match(self, device):
         if device.type != "cuda":
             return
-        frame_c = gabor_frame(N, GAMMA, device="cpu")
+        frame_c = gabor_frame(N, N, N // 2, device="cpu")
         op_c = random_convolution(N, round(0.7 * N), _gen("cpu", 1), device="cpu")
         alpha = _planted(torch.device("cpu"), frame_c.n_atoms)
         y_c = measure(synthesis(alpha, frame_c), op_c)

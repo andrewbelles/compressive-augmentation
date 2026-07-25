@@ -29,6 +29,8 @@ def main() -> int:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--per-group", type=int, default=32)
     p.add_argument("--snrs", type=str, default="")
+    p.add_argument("--dictionary", type=str, default="")
+    p.add_argument("--draws", type=int, default=0)
     p.add_argument("--device", type=str, default="auto")
     args = p.parse_args()
 
@@ -44,7 +46,16 @@ def main() -> int:
         frames = load_frames(args.hdf5, [r["frame_idx"] for r in picked], device)
         meta = {"mod": [r["mod"] for r in picked], "snr": [r["snr"] for r in picked]}
 
-    records = REGISTRY[args.mechanism](frames, meta, _parse_ratios(args.ratios), args.seed, device)
+    kw = {}
+    if args.dictionary:
+        kw["dictionary"] = args.dictionary
+    if args.draws:
+        kw["draws"] = args.draws
+    fn = REGISTRY[args.mechanism]
+    accepted = fn.__code__.co_varnames[:fn.__code__.co_argcount]
+    kw = {k: v for k, v in kw.items() if k in accepted}
+
+    records = fn(frames, meta, _parse_ratios(args.ratios), args.seed, device, **kw)
     path = write_records(args.out, args.mechanism, args.seed, records)
     print(f"wrote {path}  rows={len(records)}", flush=True)
     return 0

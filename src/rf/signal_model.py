@@ -1,5 +1,7 @@
 import math
 
+from dsp.frames import Frame, dft_frame, gabor_frame
+
 # rml2018 generation constants and the training-free admissible-band endpoints (Layer II and V)
 # Constants follow O'Shea, Roy, Clancy 2018 (JSTSP 12(1)) section II.
 
@@ -47,3 +49,22 @@ def admissible_band(rho_dt_val: float, rho_label: float, rho_max: float) -> dict
     lo = max(rho_dt_val, rho_label)
     hi = rho_max
     return {"lo": lo, "hi": hi, "nonempty": lo <= hi, "width": max(0.0, hi - lo)}
+
+
+# dictionary arms for rml2018: window and hop are set by the symbol rate, so they live here
+SYMBOL_WINDOW = 4 * SAMPLES_PER_SYMBOL
+
+DICTIONARIES = {
+    "dft": lambda n, device: dft_frame(n, device=device),
+    "windowed_dft": lambda n, device: gabor_frame(n, n, n // 2, device=device),
+    "gabor_symbol": lambda n, device: gabor_frame(n, SYMBOL_WINDOW, SAMPLES_PER_SYMBOL, device=device),
+}
+
+DEFAULT_DICTIONARY = "gabor_symbol"
+
+
+def build_dictionary(name: str, n: int = FRAME_LEN, device=None) -> Frame:
+    """Build one named dictionary arm at frame length n."""
+    if name not in DICTIONARIES:
+        raise ValueError(f"unknown dictionary {name!r}, expected one of {sorted(DICTIONARIES)}")
+    return DICTIONARIES[name](n, device)

@@ -75,8 +75,10 @@ Submit the array (index = seed):
 sbatch scripts/run_hypotheses.sbatch
 ```
 
-Each array task runs all seven mechanisms for one seed and writes seed-tagged parquet to
-`analysis/rf_hypotheses/`. Aggregate into verdicts once the array finishes:
+Each array task runs all nine mechanisms for one seed and writes seed-tagged parquet to
+`analysis/rf_hypotheses/`. Every artifact is stratified by SNR, so verdicts can be read in the
+signal regime rather than pooled across the noise regime. Aggregate into verdicts once the array
+finishes:
 
 ```
 sbatch --dependency=afterok:<ARRAY_JOB_ID> scripts/report_hypotheses.sbatch
@@ -86,7 +88,20 @@ Results:
 
 ```
 cat analysis/rf_hypotheses/verdicts.csv          # accept/reject per hypothesis + GO/NO-GO
-ls  analysis/rf_hypotheses/figures/              # calibration and related plots
+ls  analysis/rf_hypotheses/figures/              # tradeoff, calibration, compressibility, margin
+```
+
+Rows marked `informational` are controls (`operator_isometry`, `backprojection_law`) and theory
+(`admissible_band`); they validate the implementation and do not vote in the GO/NO-GO. The decision
+figure is `figures/label_nuisance_tradeoff.png`: GO needs a rho range where label retention stays
+high while view diversity is still non-zero.
+
+A cheap high-SNR pass, useful before committing to the full array:
+
+```
+PYTHONPATH=src python run_hypotheses.py --mechanism dictionary_compressibility --seed 0 \
+    --hdf5 "$HDF5" --manifest "$MANIFEST" --out "$ARTIFACTS" \
+    --snrs 20,22,24,26,28,30 --per-group 16
 ```
 
 ## 6. Lines a $USER must check before submitting
@@ -102,6 +117,13 @@ Edit these in `scripts/run_hypotheses.sbatch` (and `acquire_rml2018.sbatch`,
   clone lives elsewhere.
 - `CONDA_ENV=compressive-augmentation` — match your env name.
 - `--per-group 64` — frames sampled per (mod, snr) group; lower for a fast smoke run.
+- `--draws 64` — operator draws for `operator_draw_variance`. The prediction is an 11-17% variance
+  difference, so a small draw count cannot resolve it; lower this only for smoke runs.
+- `--snrs` — restrict to an SNR subset (e.g. `20,22,24,26,28,30`). Artifacts stay stratified either
+  way; this only limits which strata are computed.
+- `--dictionary` — override the dictionary arm (`dft`, `windowed_dft`, `gabor_symbol`) for the
+  mechanisms that take one. `dictionary_compressibility` and `operator_isometry` always sweep all
+  three.
 
 ## 7. Monitoring and teardown
 

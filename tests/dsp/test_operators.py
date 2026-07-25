@@ -66,7 +66,7 @@ class TestPartialIsometry:
     def test_tight_frame_gives_equal_singular_values(self, device):
         # Prop 4: A = Phi D has m equal nonzero singular values for tight D
         op = _op(device)
-        frame = gabor_frame(N, gamma=2, device=device)
+        frame = gabor_frame(N, N, N // 2, device=device)
         a = measure(synthesis(torch.eye(frame.n_atoms, dtype=torch.complex64, device=device), frame), op)
         a = a.transpose(-1, -2)
         sv = torch.linalg.svdvals(a)
@@ -77,7 +77,7 @@ class TestPartialIsometry:
     def test_nontight_frame_spreads_spectrum(self, device):
         # Null: perturbing tightness spreads A's singular values
         op = _op(device)
-        frame = gabor_frame(N, gamma=2, device=device)
+        frame = gabor_frame(N, N, N // 2, device=device)
         d = frame.d.clone()
         d[:, ::7] *= 3.0
         a = (op_dense := to_dense(op)) @ d

@@ -38,7 +38,7 @@ class TestCalibrationMonotone:
 
 class TestSEPredictsRecovery:
     def test_se_upper_bounds_realized_and_gap_closes(self, device):
-        frame = gabor_frame(N, GAMMA, device=device)
+        frame = gabor_frame(N, N, N // 2, device=device)
         d = frame.n_atoms
         sigma = 0.1
         gaps = {}

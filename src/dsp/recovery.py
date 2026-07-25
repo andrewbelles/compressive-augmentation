@@ -46,6 +46,30 @@ def lasso_fista(
     return alpha
 
 
+def sparse_code(
+    x: torch.Tensor,
+    frame: Frame,
+    lam: float = 0.05,
+    max_iters: int = 400,
+    tol: float = 1e-5,
+) -> tuple[torch.Tensor, int]:
+    """Sparse-code x in the frame by FISTA, returning coefficients and iterations used."""
+    step = 1.0 / frame.gamma  # 1/L, L = ||D||^2 = gamma
+    alpha = torch.zeros(*x.shape[:-1], frame.n_atoms, dtype=frame.d.dtype, device=x.device)
+    z, t, used = alpha.clone(), 1.0, max_iters
+    for i in range(max_iters):
+        grad = analysis(synthesis(z, frame) - x, frame)
+        nxt = complex_soft_threshold(z - step * grad, lam * step)
+        t2 = 0.5 * (1.0 + (1.0 + 4.0 * t * t) ** 0.5)
+        z = nxt + ((t - 1.0) / t2) * (nxt - alpha)
+        shift = (nxt - alpha).norm() / nxt.norm().clamp_min(EPS)
+        alpha, t = nxt, t2
+        if shift.item() < tol:
+            used = i + 1
+            break
+    return alpha, used
+
+
 def soft_threshold_divergence(r: torch.Tensor, theta) -> torch.Tensor:
     """Mean Wirtinger divergence of the complex soft-threshold, for the Onsager term."""
     mag = r.abs()
