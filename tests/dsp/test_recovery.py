@@ -65,6 +65,20 @@ class TestRecovery:
         x = synthesis(_planted(device, frame.n_atoms), frame)
         assert _snr_db(x, reconstruct(oamp(measure(x, op), op, frame), frame)) > 40.0
 
+    def test_output_stays_bounded_on_near_tone(self, device):
+        # null: an unnormalized linear stage compounds on frames whose atoms never fall below
+        # threshold, so a tone in a redundant frame diverges instead of merely failing
+        for window, hop in ((N, N // 2), (32, 8)):
+            frame = gabor_frame(N, window, hop, device=device)
+            k = torch.arange(N, device=device, dtype=torch.float32)
+            x = torch.stack([torch.exp(2j * torch.pi * (5 + i) * k / N) for i in range(4)])
+            x = x / x.abs().pow(2).mean(-1, keepdim=True).sqrt()
+            for rho in (0.3, 0.7):
+                op = random_convolution(N, round(rho * N), _gen(device, 1), device=device)
+                xhat = reconstruct(oamp(measure(x, op), op, frame), frame)
+                assert xhat.norm().item() < 2.0 * x.norm().item()
+                assert _snr_db(x, xhat) > 0.0
+
     def test_divergence_clamp_does_not_bind(self, device):
         frame = gabor_frame(N, N, N // 2, device=device)
         op = random_convolution(N, round(0.9 * N), _gen(device, 1), device=device)

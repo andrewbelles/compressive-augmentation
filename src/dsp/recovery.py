@@ -81,15 +81,16 @@ def oamp(
     y: torch.Tensor,
     op: ConvOperator,
     frame: Frame,
-    iters: int = 40,
+    iters: int = 120,
     kappa: float = 1.6,
-    damping: float = 0.6,
+    damping: float = 1.0,
 ) -> torch.Tensor:
     """Complex OAMP recovery: divergence-free soft-threshold with matched linear stage."""
+    gain = frame.gamma * op.n / op.m  # nonzero eigenvalue of A*A, so W = A*/gain makes WA a projection
     s = torch.zeros(*y.shape[:-1], frame.n_atoms, dtype=frame.d.dtype, device=y.device)
     for _ in range(iters):
         resid = y - apply_A(s, op, frame)
-        innov = apply_AH(resid, op, frame)  # W = A* is de-correlated for tight D
+        innov = apply_AH(resid, op, frame) / gain
         r = s + innov
         tau = innov.abs().pow(2).mean(dim=-1, keepdim=True).clamp_min(EPS).sqrt()
         theta = kappa * tau

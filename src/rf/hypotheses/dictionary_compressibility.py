@@ -11,6 +11,7 @@ from rf.signal_model import DICTIONARIES, build_dictionary, k_eff
 # arm is degenerate because its support is shared across classes.
 
 LAM = 0.05
+MAX_ITERS = 400
 
 
 def _k_energy(coeffs, frac):
@@ -48,7 +49,7 @@ def run(frames, meta, ratios, seed, device) -> list[dict]:
         for snr, rows in snr_strata(meta, x.shape[0]).items():
             sel = x[torch.tensor(rows, device=device)]
             mods = mods_at(meta, rows)
-            coeffs, iters = sparse_code(sel, frame, LAM)
+            coeffs, iters = sparse_code(sel, frame, LAM, max_iters=MAX_ITERS)
             k90, k99 = _k_energy(coeffs, 0.9), _k_energy(coeffs, 0.99)
             span = _circular_span(analysis(sel, frame) if name == "dft" else coeffs)
             sep = scatter_ratio(coeffs.abs(), mods)
@@ -70,5 +71,6 @@ def run(frames, meta, ratios, seed, device) -> list[dict]:
                     "circular_span_ratio": span[sub].mean().item(),
                     "class_scatter_ratio": sep,
                     "fista_iters": iters,
+                    "fista_converged": iters < MAX_ITERS,
                 })
     return records
