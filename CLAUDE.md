@@ -37,8 +37,7 @@ task at hand.
 - DSP operators are device-agnostic: read `x.device`, accept a `torch.Generator`, never hardcode
   `cuda` or `cpu`. This is what makes CPU/GPU parity testable.
 - Solvers are static-iteration and fully vectorized over the batch. No per-sample control flow, no
-  coordinate descent. Prefer FFT-based operators (`O(N log N)`) over dense matrices when the
-  structure allows it.
+  coordinate descent.
 - Torch only (plus numpy/scipy for CPU-side helpers). No cupy, no jax.
 
 ## Testing
