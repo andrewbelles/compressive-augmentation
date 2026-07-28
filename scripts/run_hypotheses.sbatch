@@ -63,7 +63,7 @@ run () {  # comma-separated mechanisms, ratios, extra flags
     PYTHONPATH=src python run_hypotheses.py \
         --mechanisms "$1" --seed "$SEED" \
         --hdf5 "$HDF5" --manifest "$MANIFEST" --out "$ARTIFACTS" \
-        --snrs "$SNRS" --ratios "$2" --per-group 64 ${3:-}
+        --snrs="$SNRS" --ratios="$2" --per-group 64 ${3:-}  # = form: the SNR list leads with -10
 }
 
 # operator algebra and controls do not consume the noise axis, so run them on one task per seed
