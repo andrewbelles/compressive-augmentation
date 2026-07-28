@@ -89,11 +89,22 @@ class TestNullRejection:
 
     def test_view_diversity_vanishes_at_full_rate(self, device):
         # null: at rho -> 1 the round trip is the identity, which is not an augmentation
-        recs = REGISTRY["label_nuisance_tradeoff"](_sparse_frames(device), _meta(16),
-                                                   [0.3, 0.95], 0, device)
+        recs = [r for r in REGISTRY["kernel_geometry"](_sparse_frames(device), _meta(16),
+                                                       [0.3, 0.95], 0, device)
+                if r["arm"] == "cs"]
         low = [r["view_diversity"] for r in recs if r["rho"] == 0.3]
         high = [r["view_diversity"] for r in recs if r["rho"] == 0.95]
         assert sum(high) / len(high) < sum(low) / len(low)
+
+    def test_merged_artifacts_carry_the_absorbed_columns(self, device):
+        # the deleted mechanisms are scored from these rows, so the columns must survive the merge
+        kg = REGISTRY["kernel_geometry"](_sparse_frames(device), _meta(16), [0.6], 0, device)[0]
+        for col in ("label_retention", "view_diversity", "nuisance_collapse", "base_sep"):
+            assert col in kg
+        kn = REGISTRY["se_knee"](_sparse_frames(device), _meta(16), [0.4, 0.6, 0.8], 0, device)[0]
+        for col in ("realized_snr", "se_snr", "gap", "eps", "eps_source", "kappa",
+                    "mean_cumulant_dist", "delta_min", "delta_q10"):
+            assert col in kn
 
     def test_kernel_geometry_null_holds_under_isotropic_corruption(self, device):
         # zeta_perp does not vanish in finite samples: independent complex noise in C^N correlates

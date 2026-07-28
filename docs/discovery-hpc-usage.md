@@ -69,16 +69,18 @@ ls -lh data/rml2018/GOLD_XYZ_OSC.0001_1024.hdf5 data/rml2018/manifest_all.csv
 
 ## 5. Run the hypothesis battery
 
-Submit the array (index = seed):
+Submit the array:
 
 ```
 sbatch scripts/run_hypotheses.sbatch
 ```
 
-Each array task runs all twelve mechanisms for one seed and writes seed-tagged parquet to
-`analysis/rf_hypotheses/`. Every artifact is stratified by SNR, so verdicts can be read in the
-signal regime rather than pooled across the noise regime, and the mechanisms that consume a
-measurement-noise level are run once per level. Aggregate into verdicts once the array finishes:
+The array index decomposes as `seed = id / 4`, `measurement_snr = (30, 20, 10, noiseless)[id % 4]`,
+so 64 tasks cover 16 seeds at four noise levels. Artifacts are named
+`{mechanism}_seed{NNN}_{tag}.parquet` so tasks sharing a seed do not clobber each other. Mechanisms
+that ignore the noise axis run only on `id % 4 == 0`. Nine drivers write artifacts; three further
+verdicts are scored from them, since one reconstruction serves several claims. Aggregate once the
+array finishes:
 
 ```
 sbatch --dependency=afterok:<ARRAY_JOB_ID> scripts/report_hypotheses.sbatch
@@ -114,11 +116,13 @@ Edit these in `scripts/run_hypotheses.sbatch` (and `acquire_rml2018.sbatch`,
 - `#SBATCH --account=free` — set to your Slurm account if `free` is not available to you.
 - `#SBATCH --partition=h200_preemptable` / `--gres=gpu:h200:1` — change if you use a different GPU
   partition, or drop the gres and use `--partition=standard` to run CPU-only (slower).
-- `#SBATCH --array=0-15` — the seed range. Widen for more seeds, narrow to test.
+- `#SBATCH --array=0-63` — 16 seeds x 4 measurement-SNR levels. Narrow to `0-3` for one seed.
 - `SCRATCH=/dartfs-hpc/scratch/$USER` and `REPO=$SCRATCH/compressive-augmentation` — change if your
   clone lives elsewhere.
 - `CONDA_ENV=compressive-augmentation` — match your env name.
 - `--per-group 64` — frames sampled per (mod, snr) group; lower for a fast smoke run.
+- `--mechanisms a,b,c` — run several in one process, sharing the HDF5 read, the
+  dictionary build and the state-evolution cache. `--mechanism` remains as an alias.
 - `--draws 64` — operator draws for `operator_draw_variance`. The prediction is an 11-17% variance
   difference, so a small draw count cannot resolve it; lower this only for smoke runs.
 - `--snrs` — restrict to an SNR subset (e.g. `20,22,24,26,28,30`). Artifacts stay stratified either

@@ -7,19 +7,39 @@ import torch
 
 
 @dataclass(frozen=True)
+class GaborLattice:
+    """Time-frequency lattice letting synthesis and analysis run as an inverse STFT and an STFT."""
+    window: int
+    hop: int
+    n_freq: int
+    shifts: int
+    pos: torch.Tensor        # (shifts, window) output indices, already reduced mod n
+    win: torch.Tensor        # (shifts, window) scaled window values at those indices
+    phase_syn: torch.Tensor  # (shifts, n_freq) cyclic shift as a frequency ramp, carrying n_freq
+    phase_ana: torch.Tensor  # (shifts, n_freq) its conjugate, without the n_freq factor
+
+    def to(self, device) -> "GaborLattice":
+        return GaborLattice(self.window, self.hop, self.n_freq, self.shifts,
+                            self.pos.to(device), self.win.to(device),
+                            self.phase_syn.to(device), self.phase_ana.to(device))
+
+
+@dataclass(frozen=True)
 class Frame:
     """Dense synthesis frame D of shape (n, d) with tight-frame constant gamma."""
     d: torch.Tensor
     n: int
     n_atoms: int
     gamma: float
+    lattice: GaborLattice = None  # None means no fast path, so synthesis falls back to D itself
 
     @property
     def redundancy(self) -> float:
         return self.n_atoms / self.n
 
     def to(self, device) -> "Frame":
-        return Frame(self.d.to(device), self.n, self.n_atoms, self.gamma)
+        lat = self.lattice.to(device) if self.lattice is not None else None
+        return Frame(self.d.to(device), self.n, self.n_atoms, self.gamma, lat)
 
 
 def _hann(length: int, device) -> torch.Tensor:
@@ -51,7 +71,20 @@ def gabor_frame(n: int, window: int, hop: int, n_freq: int = None, device=None) 
     freqs = torch.exp(2j * math.pi * phase.float() / n_freq)
     scale = 1.0 / math.sqrt(hop)  # makes DD* = (n_freq/hop) I
     cols = [scale * win[j].to(torch.complex64).unsqueeze(1) * freqs for j in range(shifts)]
-    return Frame(torch.cat(cols, dim=1), n, shifts * n_freq, n_freq / hop)
+
+    shift = torch.arange(shifts, device=device).unsqueeze(1)
+    pos = (idx[:window].unsqueeze(0) + shift * hop) % n
+    ramp = torch.arange(n_freq, device=device).unsqueeze(0)
+    # the gather at (j*hop + u) mod n_freq is a cyclic shift, so carry it as a frequency ramp
+    lat_phase = torch.exp(2j * math.pi * ((ramp * (shift * hop % n_freq)) % n_freq).float() / n_freq)
+    lattice = GaborLattice(
+        window, hop, n_freq, shifts,
+        pos,
+        (scale * win.gather(1, pos)).to(torch.complex64),
+        (n_freq * lat_phase).to(torch.complex64),
+        lat_phase.conj().to(torch.complex64),
+    )
+    return Frame(torch.cat(cols, dim=1), n, shifts * n_freq, n_freq / hop, lattice)
 
 
 def dft_frame(n: int, device=None) -> Frame:
@@ -65,12 +98,29 @@ def dft_frame(n: int, device=None) -> Frame:
 
 def synthesis(alpha: torch.Tensor, frame: Frame) -> torch.Tensor:
     """Map coefficients to a signal, x = D alpha."""
-    return alpha.to(frame.d.dtype) @ frame.d.transpose(-1, -2)
+    alpha = alpha.to(frame.d.dtype)
+    lat = frame.lattice
+    if lat is None:
+        return alpha @ frame.d.transpose(-1, -2)
+    lead = alpha.shape[:-1]
+    flat = alpha.reshape(-1, lat.shifts, lat.n_freq)
+    seg = lat.win * torch.fft.ifft(flat * lat.phase_syn, n=lat.n_freq, dim=-1)
+    out = torch.zeros(flat.shape[0], frame.n, dtype=alpha.dtype, device=alpha.device)
+    out.scatter_add_(1, lat.pos.reshape(1, -1).expand(flat.shape[0], -1), seg.reshape(flat.shape[0], -1))
+    return out.reshape(*lead, frame.n)
 
 
 def analysis(x: torch.Tensor, frame: Frame) -> torch.Tensor:
     """Map a signal to coefficients, alpha = D* x."""
-    return x.to(frame.d.dtype) @ frame.d.conj()
+    x = x.to(frame.d.dtype)
+    lat = frame.lattice
+    if lat is None:
+        return x @ frame.d.conj()
+    lead = x.shape[:-1]
+    flat = x.reshape(-1, frame.n)
+    seg = flat[:, lat.pos.reshape(-1)].reshape(-1, lat.shifts, lat.window) * lat.win.conj()
+    coeff = torch.fft.fft(seg, n=lat.n_freq, dim=-1) * lat.phase_ana
+    return coeff.reshape(*lead, frame.n_atoms)
 
 
 def is_tight(frame: Frame, atol: float = 1e-4) -> bool:

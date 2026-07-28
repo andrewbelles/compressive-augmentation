@@ -11,6 +11,18 @@ from rf.signal_model import DICTIONARIES, build_dictionary
 def run(frames, meta, ratios, seed, device) -> list[dict]:
     n = frames.shape[-1]
     records = []
+    # a precision control must not run in reduced precision, whatever the entry point enabled
+    tf32 = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        records = _measure(n, ratios, seed, device)
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = tf32
+    return records
+
+
+def _measure(n, ratios, seed, device) -> list[dict]:
+    records = []
     for name in DICTIONARIES:
         frame = build_dictionary(name, n, device)
         mu_d = mutual_coherence(frame.d)

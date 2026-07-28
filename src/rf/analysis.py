@@ -180,7 +180,12 @@ VERDICTS = {
 
 
 # verdicts scored from another mechanism's artifacts rather than their own
-ARTIFACT_SOURCE = {"compressibility_budget": "dictionary_compressibility"}
+ARTIFACT_SOURCE = {
+    "compressibility_budget": "dictionary_compressibility",
+    "label_nuisance_tradeoff": "kernel_geometry",
+    "se_calibration": "se_knee",
+    "cumulant_margin": "se_knee",
+}
 
 
 def build_verdicts(out_dir) -> pd.DataFrame:

@@ -77,6 +77,50 @@ def soft_threshold_divergence(r: torch.Tensor, theta) -> torch.Tensor:
     return (active * (1.0 - theta / (2.0 * mag.clamp_min(EPS)))).mean(dim=-1, keepdim=True)
 
 
+def denoise_step(r: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
+    """Divergence-free soft-threshold update, sharing one magnitude pass over r."""
+    mag = r.abs()
+    active = (mag > theta).to(r.real.dtype)
+    div = (active * (1.0 - theta / (2.0 * mag.clamp_min(EPS)))).mean(dim=-1, keepdim=True)
+    div = div.clamp(0.0, 0.95)
+    shrink = (mag - theta).clamp_min(0.0) / mag.clamp_min(EPS)
+    return r * ((shrink - div) / (1.0 - div))
+
+
+def _oamp_update_real(sr: torch.Tensor, ir: torch.Tensor, kappa: float, gain: float) -> torch.Tensor:
+    """Whole update over (..., 2) real views so inductor can fuse it; it rejects complex ops."""
+    ire, iim = ir[..., 0] / gain, ir[..., 1] / gain
+    re, im = sr[..., 0] + ire, sr[..., 1] + iim
+    tau = (ire * ire + iim * iim).mean(dim=-1, keepdim=True).clamp_min(EPS).sqrt()
+    theta = kappa * tau
+    mag = torch.sqrt(re * re + im * im)
+    active = (mag > theta).to(sr.dtype)
+    div = (active * (1.0 - theta / (2.0 * mag.clamp_min(EPS)))).mean(dim=-1, keepdim=True)
+    div = div.clamp(0.0, 0.95)
+    shrink = (mag - theta).clamp_min(0.0) / mag.clamp_min(EPS)
+    scale = (shrink - div) / (1.0 - div)
+    return torch.stack([re * scale, im * scale], dim=-1)
+
+
+_compiled_update = torch.compile(_oamp_update_real, dynamic=True)
+_compile_ok = True
+
+
+def _oamp_update(s: torch.Tensor, innov: torch.Tensor, kappa: float, gain: float) -> torch.Tensor:
+    """One OAMP step, compiled when available and eager complex otherwise."""
+    global _compile_ok
+    if _compile_ok:
+        try:
+            out = _compiled_update(torch.view_as_real(s).contiguous(),
+                                   torch.view_as_real(innov).contiguous(), kappa, gain)
+            return torch.view_as_complex(out.contiguous())
+        except Exception:
+            _compile_ok = False
+    scaled = innov / gain
+    tau = scaled.abs().pow(2).mean(dim=-1, keepdim=True).clamp_min(EPS).sqrt()
+    return denoise_step(s + scaled, kappa * tau)
+
+
 def oamp(
     y: torch.Tensor,
     op: ConvOperator,
@@ -89,14 +133,9 @@ def oamp(
     gain = frame.gamma * op.n / op.m  # nonzero eigenvalue of A*A, so W = A*/gain makes WA a projection
     s = torch.zeros(*y.shape[:-1], frame.n_atoms, dtype=frame.d.dtype, device=y.device)
     for _ in range(iters):
-        resid = y - apply_A(s, op, frame)
-        innov = apply_AH(resid, op, frame) / gain
-        r = s + innov
-        tau = innov.abs().pow(2).mean(dim=-1, keepdim=True).clamp_min(EPS).sqrt()
-        theta = kappa * tau
-        eta = complex_soft_threshold(r, theta)
-        div = soft_threshold_divergence(r, theta).clamp(0.0, 0.95)
-        s = damping * ((eta - div * r) / (1.0 - div)) + (1.0 - damping) * s
+        innov = apply_AH(y - apply_A(s, op, frame), op, frame)
+        nxt = _oamp_update(s, innov, kappa, gain)
+        s = nxt if damping == 1.0 else damping * nxt + (1.0 - damping) * s
     return s
 
 

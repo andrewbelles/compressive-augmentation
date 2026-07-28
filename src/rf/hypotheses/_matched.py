@@ -16,11 +16,15 @@ def distortion(x: torch.Tensor, xt: torch.Tensor) -> torch.Tensor:
     return (xt - x).abs().pow(2).sum(-1) / x.abs().pow(2).sum(-1).clamp_min(EPS)
 
 
-def cs_view(x, op, frame, kappa, measurement_snr, gen):
+def draw_noise(x, op, measurement_snr, gen):
+    """Measurement noise for one cell; share it across views whose difference must isolate x."""
+    return measurement_noise(measure(x, op), measurement_snr, op, gen)
+
+
+def cs_view(x, op, frame, kappa, noise=None):
     """Full CS round trip, the reference arm that defines the target distortion."""
-    clean = measure(x, op)
-    y = clean + measurement_noise(clean, measurement_snr, op, gen)
-    return reconstruct(oamp(y, op, frame, kappa=kappa), frame)
+    y = measure(x, op)
+    return reconstruct(oamp(y if noise is None else y + noise, op, frame, kappa=kappa), frame)
 
 
 def awgn_view(x, target, gen):

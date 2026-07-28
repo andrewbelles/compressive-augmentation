@@ -7,8 +7,14 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from rf.analysis import HIGH_SNR_DB, build_verdicts, is_go
+from common.utils import enable_fast_matmul
+from rf.analysis import ARTIFACT_SOURCE, HIGH_SNR_DB, build_verdicts, is_go
 from rf.hypotheses._artifacts import load_records
+
+
+def _load(out_dir: Path, mechanism: str):
+    """Read a mechanism's rows, following the redirect when another driver measured them."""
+    return load_records(out_dir, ARTIFACT_SOURCE.get(mechanism, mechanism))
 
 
 def _save(fig_dir: Path, name: str):
@@ -22,9 +28,10 @@ def _high(df):
 
 
 def _plot_tradeoff(out_dir: Path, fig_dir: Path):
-    df = load_records(out_dir, "label_nuisance_tradeoff")
+    df = _load(out_dir, "label_nuisance_tradeoff")
     if df.empty:
         return
+    df = df[df["arm"] == "cs"] if "arm" in df else df
     g = _high(df).groupby("rho")[["label_retention", "view_diversity", "nuisance_collapse"]].mean()
     plt.figure()
     plt.plot(g.index, g["label_retention"], "o-", label="label retention")
@@ -39,7 +46,7 @@ def _plot_tradeoff(out_dir: Path, fig_dir: Path):
 
 
 def _plot_se(out_dir: Path, fig_dir: Path):
-    df = load_records(out_dir, "se_calibration")
+    df = _load(out_dir, "se_calibration")
     if df.empty:
         return
     g = _high(df).groupby("rho")[["realized_snr", "se_snr"]].mean()
@@ -84,7 +91,7 @@ def _plot_backprojection(out_dir: Path, fig_dir: Path):
 
 
 def _plot_cumulants(out_dir: Path, fig_dir: Path):
-    df = load_records(out_dir, "cumulant_margin")
+    df = _load(out_dir, "cumulant_margin")
     if df.empty:
         return
     g = _high(df).groupby("rho")[["mean_cumulant_dist", "delta_q10", "delta_min"]].mean()
@@ -116,7 +123,7 @@ def _plot_kernel_geometry(out_dir: Path, fig_dir: Path):
 
 
 def _plot_retention_vs_diversity(out_dir: Path, fig_dir: Path):
-    df = load_records(out_dir, "label_nuisance_tradeoff")
+    df = _load(out_dir, "label_nuisance_tradeoff")
     if df.empty or "arm" not in df:
         return
     plt.figure()
@@ -136,6 +143,7 @@ FIGURES = (_plot_kernel_geometry, _plot_retention_vs_diversity, _plot_tradeoff, 
 
 
 def main() -> int:
+    enable_fast_matmul()
     p = argparse.ArgumentParser(description="Report CoAug first-stage hypothesis verdicts.")
     p.add_argument("--out", type=Path, required=True, help="artifact directory")
     args = p.parse_args()

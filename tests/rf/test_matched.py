@@ -8,6 +8,7 @@ from rf.hypotheses._matched import (
     backprojection_view,
     cs_view,
     distortion,
+    draw_noise,
     dropout_view,
 )
 
@@ -55,10 +56,29 @@ class TestMatching:
         assert 0.0 <= p <= 1.0
         assert abs(distortion(x, view).mean().item() - target) < 0.05
 
-    def test_cs_view_runs_with_and_without_noise(self, device):
+    def test_measurement_noise_degrades_the_view(self, device):
+        # the flag must reach the measurement, not only the threshold it implies
         x = _frames(device)
         frame = gabor_frame(N, 32, 8, device=device)
         op = random_convolution(N, round(0.7 * N), _gen(device, 4), device=device)
-        clean = cs_view(x, op, frame, 1.0, None, _gen(device, 5))
-        noisy = cs_view(x, op, frame, 1.0, 15.0, _gen(device, 5))
+        clean = cs_view(x, op, frame, 1.0, draw_noise(x, op, None, _gen(device, 5)))
+        noisy = cs_view(x, op, frame, 1.0, draw_noise(x, op, 10.0, _gen(device, 5)))
         assert distortion(x, noisy).mean() > distortion(x, clean).mean()
+
+    def test_shared_noise_isolates_the_nuisance(self, device):
+        # reusing one draw across both views keeps 2 sigma^2 out of the collapse ratio
+        x = _frames(device)
+        frame = gabor_frame(N, 32, 8, device=device)
+        op = random_convolution(N, round(0.7 * N), _gen(device, 4), device=device)
+        w = draw_noise(x, op, 10.0, _gen(device, 5))
+        shared = distortion(cs_view(x, op, frame, 1.0, w), cs_view(x, op, frame, 1.0, w)).mean()
+        assert shared.item() < 1e-6
+
+
+class TestArtifactNaming:
+    def test_noise_levels_do_not_collide(self):
+        # the array splits over (seed, measurement_snr), so tasks sharing a seed must not clobber
+        from rf.hypotheses._artifacts import noise_tag
+        tags = {noise_tag(v) for v in (None, 30.0, 20.0, 10.0)}
+        assert len(tags) == 4
+        assert noise_tag(None) == "noiseless"

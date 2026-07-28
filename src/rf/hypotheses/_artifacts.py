@@ -34,14 +34,21 @@ def mods_at(meta: dict, rows: list[int]) -> list[str]:
     return [labels[i] for i in rows]
 
 
-def write_records(out_dir: Path, mechanism: str, seed: int, records: list[dict]) -> Path:
-    """Write one mechanism-and-seed measurement table to parquet."""
+def noise_tag(measurement_snr) -> str:
+    """Filename tag for the measurement-SNR axis; tasks sharing a seed must not clobber each other."""
+    return "noiseless" if measurement_snr is None else f"{measurement_snr:g}dB"
+
+
+def write_records(out_dir: Path, mechanism: str, seed: int, records: list[dict],
+                  tag: str = "") -> Path:
+    """Write one mechanism, seed and noise-level measurement table to parquet."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame.from_records(records)
     df.insert(0, "seed", seed)
     df.insert(0, "mechanism", mechanism)
-    path = out_dir / f"{mechanism}_seed{seed:03d}.parquet"
+    suffix = f"_{tag}" if tag else ""
+    path = out_dir / f"{mechanism}_seed{seed:03d}{suffix}.parquet"
     df.to_parquet(path, index=False)
     return path
 

@@ -3,8 +3,10 @@ import torch
 from dsp.frames import gabor_frame, synthesis, analysis
 from dsp.operators import random_convolution, measure, backproject
 from dsp.recovery import (
+    _oamp_update,
     apply_A,
     apply_AH,
+    denoise_step,
     complex_soft_threshold,
     lasso_fista,
     oamp,
@@ -118,6 +120,45 @@ class TestRecovery:
         # e = x - P x lies in the null space: measuring it gives zero
         e = x - backproject(measure(x, op), op)
         assert measure(e, op).abs().max().item() < 1e-3
+
+
+class TestFusedUpdate:
+    def test_matches_the_exported_helpers(self, device):
+        # pins the algebra so the fused loop and the published primitives cannot drift
+        g = _gen(device, 11)
+        r = torch.randn(8, 128, dtype=torch.complex64, device=device, generator=g)
+        th = torch.full((8, 1), 0.2, device=device)
+        div = soft_threshold_divergence(r, th).clamp(0.0, 0.95)
+        expect = (complex_soft_threshold(r, th) - div * r) / (1.0 - div)
+        got = denoise_step(r, th)
+        assert ((got - expect).abs().max() / expect.abs().mean()).item() < 1e-5
+
+    def test_compiled_matches_eager(self, device):
+        g = _gen(device, 12)
+        s = torch.randn(8, 128, dtype=torch.complex64, device=device, generator=g)
+        innov = torch.randn(8, 128, dtype=torch.complex64, device=device, generator=g)
+        scaled = innov / 3.0
+        tau = scaled.abs().pow(2).mean(dim=-1, keepdim=True).clamp_min(1e-12).sqrt()
+        expect = denoise_step(s + scaled, 1.1 * tau)
+        got = _oamp_update(s, innov, 1.1, 3.0)
+        assert ((got - expect).abs().max() / expect.abs().mean()).item() < 1e-4
+
+    def test_tf32_does_not_move_recovery(self, device):
+        if device.type != "cuda":
+            return
+        frame = gabor_frame(N, N, N // 2, device=device)
+        op = random_convolution(N, round(0.8 * N), _gen(device, 1), device=device)
+        y = measure(synthesis(_planted(device, frame.n_atoms), frame), op)
+        x = synthesis(_planted(device, frame.n_atoms), frame)
+        prev = torch.backends.cuda.matmul.allow_tf32
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = False
+            exact = _snr_db(x, reconstruct(oamp(y, op, frame, kappa=KAPPA), frame))
+            torch.backends.cuda.matmul.allow_tf32 = True
+            fast = _snr_db(x, reconstruct(oamp(y, op, frame, kappa=KAPPA), frame))
+        finally:
+            torch.backends.cuda.matmul.allow_tf32 = prev
+        assert abs(exact - fast) / abs(exact) < 1e-3
 
 
 class TestDeviceParity:

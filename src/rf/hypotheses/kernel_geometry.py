@@ -1,15 +1,20 @@
+import math
+
 import torch
 
+from common.statistics import scatter_ratio
+from dsp.cumulants import cumulant_features
 from dsp.frames import analysis
 from dsp.operators import random_convolution
 from dsp.recovery import sparse_code
 from dsp.state_evolution import optimal_kappa
-from rf.hypotheses._artifacts import normalize_power, snr_strata
+from rf.hypotheses._artifacts import mods_at, normalize_power, snr_strata
 from rf.hypotheses._matched import (
     awgn_view,
     backprojection_view,
     cs_view,
     distortion,
+    draw_noise,
     dropout_view,
 )
 from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, k_eff
@@ -17,10 +22,14 @@ from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, k_eff
 # H0: at matched distortion the CS view distribution is an isotropic Gaussian. Rejecting it is what
 # makes the kernel a new analytic object rather than an expensive way to write down AWGN, whose
 # kernel is already known. Accept: zeta_perp exceeds both the AWGN and the back-projection arm.
+#
+# The same two views carry the Layer V trade-off, so retention and diversity are recorded here and
+# label_nuisance_tradeoff is scored from these artifacts rather than recomputing them.
 
 EPS = 1e-12
 LAM = 0.05
 BOOTSTRAP = 1000
+NUISANCE_CFO = 3.5
 
 
 def _inner(a, b):
@@ -44,15 +53,20 @@ def _support_fraction(e, alpha, frame, k):
     return coeffs.gather(-1, idx).sum(-1) / coeffs.sum(-1).clamp_min(EPS)
 
 
-def _stats(x, v1, v2, alpha, frame, k):
+def _stats(x, v1, v2, alpha, frame, k, mods, base_sep):
     e1, e2 = v1 - x, v2 - x
     p1, p2 = _perp(e1, x), _perp(e2, x)
+    sep = scatter_ratio(cumulant_features(v1), mods)
     return {
-        "gain": (_inner(v1, x) / x.abs().pow(2).sum(-1).clamp_min(EPS)),
+        "gain": _inner(v1, x) / x.abs().pow(2).sum(-1).clamp_min(EPS),
         "zeta": _zeta(e1, e2),
         "zeta_perp": _zeta(p1, p2),
         "support_fraction": _support_fraction(e1, alpha, frame, k),
         "achieved_distortion": distortion(x, v1),
+        "view_diversity": distortion(v1, v2),
+        "view_sep": torch.full_like(distortion(x, v1), sep),
+        "label_retention": torch.full_like(distortion(x, v1),
+                                           sep / base_sep if base_sep else float("nan")),
     }
 
 
@@ -72,17 +86,23 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
     eps = k_eff(n) / frame.n_atoms
     sigma = 0.0 if measurement_snr is None else 10.0 ** (-measurement_snr / 20.0)
     k_top = max(1, int(round(k_eff(n))))
+    kgrid = torch.arange(n, device=device)
     boot = torch.Generator().manual_seed(seed)
     records = []
     for snr_db, rows in snr_strata(meta, x.shape[0]).items():
         sel = x[torch.tensor(rows, device=device)]
+        mods = mods_at(meta, rows)
         alpha, _ = sparse_code(sel, frame, LAM)
+        base_sep = scatter_ratio(cumulant_features(sel), mods)
+        nuis = sel * torch.exp(2j * math.pi * NUISANCE_CFO * kgrid / n)
+        base_nuis = distortion(sel, nuis).mean()
         for rho in ratios:
             m = max(1, round(rho * n))
             kappa = optimal_kappa(rho, sigma, eps, frame.gamma, n)
             gens = [torch.Generator(device=device).manual_seed(seed * 100 + j) for j in (0, 1)]
             ops = [random_convolution(n, m, g, device=device) for g in gens]
-            cs = [cs_view(sel, ops[j], frame, kappa, measurement_snr, gens[j]) for j in (0, 1)]
+            noise = [draw_noise(sel, ops[j], measurement_snr, gens[j]) for j in (0, 1)]
+            cs = [cs_view(sel, ops[j], frame, kappa, noise[j]) for j in (0, 1)]
             target = distortion(sel, cs[0])
             tmean = target.mean().item()
 
@@ -93,7 +113,13 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
             arms["dropout"] = [dropout_view(sel, alpha, frame, tmean, seed * 100 + j, device)[0]
                                for j in (0, 1)]
 
-            stats = {a: _stats(sel, v[0], v[1], alpha, frame, k_top) for a, v in arms.items()}
+            # the nuisance view reuses the base view's noise, so the ratio isolates the nuisance
+            # instead of picking up an independent 2 sigma^2
+            nuis_view = cs_view(nuis, ops[0], frame, kappa, noise[0])
+            collapse = (distortion(cs[0], nuis_view).mean() / base_nuis.clamp_min(EPS)).item()
+
+            stats = {a: _stats(sel, v[0], v[1], alpha, frame, k_top, mods, base_sep)
+                     for a, v in arms.items()}
             zp = {a: s["zeta_perp"].cpu() for a, s in stats.items()}
             lo_a, hi_a = _bootstrap_ci(zp["cs"], zp["awgn"], boot)
             lo_b, hi_b = _bootstrap_ci(zp["cs"], zp["backprojection"], boot)
@@ -107,6 +133,8 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
                     "m": m,
                     "kappa": kappa,
                     "target_distortion": tmean,
+                    "base_sep": base_sep,
+                    "nuisance_collapse": collapse if arm == "cs" else float("nan"),
                     **{key: val.mean().item() for key, val in s.items()},
                     # contrasts are carried on every row so analysis can group freely
                     "zeta_perp_vs_awgn_lo": lo_a,

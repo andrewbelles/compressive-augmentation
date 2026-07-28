@@ -5,11 +5,8 @@ from . import (
     se_kappa_prediction,
     se_knee,
     dictionary_compressibility,
-    se_calibration,
     backprojection_law,
     operator_draw_variance,
-    cumulant_margin,
-    label_nuisance_tradeoff,
     admissible_band,
 )
 
@@ -22,11 +19,8 @@ REGISTRY = {
     "se_kappa_prediction": se_kappa_prediction.run,
     "se_knee": se_knee.run,
     "dictionary_compressibility": dictionary_compressibility.run,
-    "se_calibration": se_calibration.run,
     "backprojection_law": backprojection_law.run,
     "operator_draw_variance": operator_draw_variance.run,
-    "cumulant_margin": cumulant_margin.run,
-    "label_nuisance_tradeoff": label_nuisance_tradeoff.run,
     "admissible_band": admissible_band.run,
 }
 

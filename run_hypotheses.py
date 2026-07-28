@@ -5,8 +5,9 @@ from pathlib import Path
 
 import torch
 
+from common.utils import enable_fast_matmul
 from rf.hypotheses import REGISTRY, DATA_FREE
-from rf.hypotheses._artifacts import DEFAULT_RATIOS, write_records
+from rf.hypotheses._artifacts import DEFAULT_RATIOS, noise_tag, write_records
 from rf.data import read_manifest, select_indices, load_frames
 from rf.signal_model import FRAME_LEN
 
@@ -20,8 +21,11 @@ def _parse_snrs(s):
 
 
 def main() -> int:
+    enable_fast_matmul()
     p = argparse.ArgumentParser(description="Run a first-stage CoAug hypothesis on rml2018.")
-    p.add_argument("--mechanism", required=True, choices=list(REGISTRY))
+    p.add_argument("--mechanism", type=str, default="",
+                   help="one mechanism, or several comma-separated to share one process")
+    p.add_argument("--mechanisms", type=str, default="")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--ratios", type=str, default="")
     p.add_argument("--hdf5", type=Path)
@@ -39,7 +43,13 @@ def main() -> int:
     device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available()
                           else "cpu" if args.device == "auto" else args.device)
 
-    if args.mechanism in DATA_FREE:
+    names = [m for m in (args.mechanisms or args.mechanism).split(",") if m]
+    unknown = [m for m in names if m not in REGISTRY]
+    if not names or unknown:
+        raise SystemExit(f"expected mechanisms from {sorted(REGISTRY)}, got {unknown or 'none'}")
+
+    # loading once amortizes the HDF5 read, the dictionary build and the optimal_kappa cache
+    if all(m in DATA_FREE for m in names):
         frames = torch.zeros(2, FRAME_LEN, dtype=torch.complex64, device=device)
         meta = {}
     else:
@@ -55,16 +65,18 @@ def main() -> int:
         kw["draws"] = args.draws
     if args.measurement_snr is not None:
         kw["measurement_snr"] = args.measurement_snr
-    fn = REGISTRY[args.mechanism]
-    accepted = fn.__code__.co_varnames[:fn.__code__.co_argcount]
-    # never filter silently: a dropped measurement_snr would write noiseless rows tagged as noisy
-    unconsumed = sorted(set(kw) - set(accepted))
-    if unconsumed:
-        raise SystemExit(f"{args.mechanism} does not accept {unconsumed}; drop the flag or add it")
 
-    records = fn(frames, meta, _parse_ratios(args.ratios), args.seed, device, **kw)
-    path = write_records(args.out, args.mechanism, args.seed, records)
-    print(f"wrote {path}  rows={len(records)}", flush=True)
+    for name in names:
+        fn = REGISTRY[name]
+        accepted = fn.__code__.co_varnames[:fn.__code__.co_argcount]
+        # never filter silently: a dropped measurement_snr would write noiseless rows tagged as noisy
+        unconsumed = sorted(set(kw) - set(accepted))
+        if unconsumed:
+            raise SystemExit(f"{name} does not accept {unconsumed}; drop the flag or add it")
+        records = fn(frames, meta, _parse_ratios(args.ratios), args.seed, device, **kw)
+        tag = noise_tag(args.measurement_snr) if 'measurement_snr' in accepted else ''
+        path = write_records(args.out, name, args.seed, records, tag)
+        print(f"wrote {path}  rows={len(records)}", flush=True)
     return 0
 
 
