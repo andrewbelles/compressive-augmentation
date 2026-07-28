@@ -237,15 +237,30 @@ ARTIFACT_SOURCE = {
 }
 
 
+def _coverage(df) -> str:
+    """Artifacts behind a verdict; a preempted task shrinks the pool with no other trace."""
+    seeds = df["seed"].nunique()
+    if "measurement_snr" not in df:
+        return f"{seeds} seeds"
+    return f"{seeds} seeds x {df['measurement_snr'].nunique()} levels"
+
+
 def build_verdicts(out_dir) -> pd.DataFrame:
     """Apply every hypothesis verdict over its aggregated artifacts."""
     rows = []
     for name, fn in VERDICTS.items():
         df = load_records(out_dir, ARTIFACT_SOURCE.get(name, name))
         if df.empty:
-            rows.append({"mechanism": name, "verdict": "missing", "detail": "no artifacts"})
-        else:
-            rows.append(fn(df))
+            rows.append({"mechanism": name, "verdict": "missing", "detail": "no artifacts",
+                         "coverage": ""})
+            continue
+        try:
+            row = fn(df)
+        except (ValueError, KeyError, IndexError) as err:
+            # a gap in one mechanism's rows must not take down the other twelve verdicts
+            row = _verdict(name, False, f"{type(err).__name__}: {err}")
+            row["verdict"] = "incomplete"
+        rows.append({**row, "coverage": _coverage(df)})
     return pd.DataFrame(rows)
 
 
