@@ -57,6 +57,60 @@ def to_dense(op: ConvOperator) -> torch.Tensor:
     return measure(eye, op).transpose(-1, -2).contiguous()
 
 
+def measurement_noise(y: torch.Tensor, snr_db, op: ConvOperator, gen: torch.Generator):
+    """Draw w for y = Phi x + w at a target measurement SNR; None means a noiseless pipeline."""
+    if snr_db is None:
+        return torch.zeros_like(y)
+    # E[Phi* Phi] = I so unit-power x gives per-measurement power n/m = 1/rho
+    var = (op.n / op.m) * 10.0 ** (-snr_db / 10.0)
+    w = torch.randn(y.shape, dtype=y.dtype, device=y.device, generator=gen)
+    return w * math.sqrt(var)  # complex randn already carries unit total variance
+
+
+@dataclass(frozen=True)
+class SRHTOperator:
+    """Subsampled randomized Hadamard operator, the non-equivariant contrast to ConvOperator."""
+    n: int
+    m: int
+    omega: torch.Tensor
+    signs: torch.Tensor
+
+    @property
+    def rho(self) -> float:
+        return self.m / self.n
+
+    def to(self, device) -> "SRHTOperator":
+        return SRHTOperator(self.n, self.m, self.omega.to(device), self.signs.to(device))
+
+
+def srht(n: int, m: int, gen: torch.Generator, device=None) -> SRHTOperator:
+    """Draw an SRHT operator with m of n retained rows and random signs."""
+    if n & (n - 1):
+        raise ValueError(f"n={n} must be a power of two for the Hadamard transform")
+    device = device or gen.device
+    signs = torch.where(torch.rand(n, generator=gen, device=device) < 0.5, -1.0, 1.0)
+    omega = torch.randperm(n, generator=gen, device=device)[:m].sort().values
+    return SRHTOperator(n, m, omega, signs.to(torch.complex64))
+
+
+def _fwht(x: torch.Tensor) -> torch.Tensor:
+    """Normalized fast Walsh-Hadamard transform along the last axis, in O(n log n)."""
+    n = x.shape[-1]
+    out = x.clone()
+    step = 1
+    while step < n:
+        out = out.reshape(*out.shape[:-1], n // (2 * step), 2, step)
+        a, b = out[..., 0, :], out[..., 1, :]
+        out = torch.stack([a + b, a - b], dim=-2).reshape(*x.shape[:-1], n)
+        step *= 2
+    return out / math.sqrt(n)
+
+
+def srht_measure(x: torch.Tensor, op: SRHTOperator) -> torch.Tensor:
+    """Apply the SRHT operator to a batch of complex frames."""
+    return math.sqrt(op.n / op.m) * _fwht(op.signs * x)[..., op.omega]
+
+
 def mutual_coherence(a: torch.Tensor) -> float:
     """Largest normalized inner product between distinct columns of a."""
     cols = a / a.norm(dim=0, keepdim=True).clamp_min(1e-12)

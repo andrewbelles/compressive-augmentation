@@ -75,10 +75,10 @@ Submit the array (index = seed):
 sbatch scripts/run_hypotheses.sbatch
 ```
 
-Each array task runs all nine mechanisms for one seed and writes seed-tagged parquet to
+Each array task runs all twelve mechanisms for one seed and writes seed-tagged parquet to
 `analysis/rf_hypotheses/`. Every artifact is stratified by SNR, so verdicts can be read in the
-signal regime rather than pooled across the noise regime. Aggregate into verdicts once the array
-finishes:
+signal regime rather than pooled across the noise regime, and the mechanisms that consume a
+measurement-noise level are run once per level. Aggregate into verdicts once the array finishes:
 
 ```
 sbatch --dependency=afterok:<ARRAY_JOB_ID> scripts/report_hypotheses.sbatch
@@ -92,9 +92,11 @@ ls  analysis/rf_hypotheses/figures/              # tradeoff, calibration, compre
 ```
 
 Rows marked `informational` are controls (`operator_isometry`, `backprojection_law`) and theory
-(`admissible_band`); they validate the implementation and do not vote in the GO/NO-GO. The decision
-figure is `figures/label_nuisance_tradeoff.png`: GO needs a rho range where label retention stays
-high while view diversity is still non-zero.
+(`admissible_band`); they validate the implementation and do not vote. **GO requires both gates:**
+`kernel_geometry` (the CS kernel is geometrically distinct from AWGN and from back-projection at
+matched distortion) and `label_nuisance_tradeoff` (its retention curve beats AWGN at matched view
+diversity). Decision figures are `figures/kernel_geometry.png` and
+`figures/retention_vs_diversity.png`.
 
 A cheap high-SNR pass, useful before committing to the full array:
 
@@ -124,6 +126,10 @@ Edit these in `scripts/run_hypotheses.sbatch` (and `acquire_rml2018.sbatch`,
 - `--dictionary` — override the dictionary arm (`dft`, `windowed_dft`, `gabor_symbol`) for the
   mechanisms that take one. `dictionary_compressibility` and `operator_isometry` always sweep all
   three.
+- `--measurement-snr` — dB level for `w` in `y = Phi x + w`; omit for a noiseless pipeline. This is
+  the second knob: `rho` sets the structural floor, `sigma` sets the ceiling. Without it the
+  recovery curve runs away as `rho -> 1` and `se_knee` cannot find an interior maximum. A driver
+  that does not declare the flag now raises rather than silently running noiseless.
 
 ## 7. Monitoring and teardown
 

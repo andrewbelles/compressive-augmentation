@@ -12,6 +12,7 @@ from dsp.state_evolution import (
 
 N = 128
 GAMMA = 2
+KAPPA = 1.6
 EPS_SPIKE = 0.05
 
 
@@ -48,7 +49,7 @@ class TestSEPredictsRecovery:
             alpha = _bernoulli_gaussian((128, d), EPS_SPIKE, torch.Generator(device=device).manual_seed(7), device)
             x = synthesis(alpha, frame)
             y = measure(x, op) + sigma * torch.randn(128, m, dtype=torch.complex64, device=device)
-            realized = _snr_db(x, reconstruct(oamp(y, op, frame), frame))
+            realized = _snr_db(x, reconstruct(oamp(y, op, frame, kappa=KAPPA), frame))
             se = calibration_snr(rho, sigma, EPS_SPIKE, GAMMA, N)
             assert se + 1.0 >= realized
             gaps[rho] = se - realized

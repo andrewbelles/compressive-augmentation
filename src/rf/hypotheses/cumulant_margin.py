@@ -4,7 +4,8 @@ from dsp.cumulants import cumulant_features, cumulant_distance
 from dsp.operators import random_convolution, measure
 from dsp.recovery import oamp, reconstruct
 from rf.hypotheses._artifacts import mods_at, normalize_power, snr_strata
-from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary
+from dsp.state_evolution import optimal_kappa
+from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, k_eff
 
 # Layer V Prop 5 Eq. 11: the CS view preserves the label-discriminating cumulants inside the band.
 # Class means are taken within an SNR stratum, since pooling collapses every class onto the noise
@@ -26,10 +27,13 @@ def _margins(feats, mods, device):
     return pairs.min().item(), pairs.quantile(0.1).item()
 
 
-def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY) -> list[dict]:
+def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
+        measurement_snr=None) -> list[dict]:
     n = frames.shape[-1]
     frame = build_dictionary(dictionary, n, device)
     x = normalize_power(frames)
+    eps = k_eff(n) / frame.n_atoms
+    sigma = 0.0 if measurement_snr is None else 10.0 ** (-measurement_snr / 20.0)
     records = []
     for snr_db, rows in snr_strata(meta, x.shape[0]).items():
         sel = x[torch.tensor(rows, device=device)]
@@ -39,7 +43,8 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY) -> li
             m = max(1, round(rho * n))
             gen = torch.Generator(device=device).manual_seed(seed)
             op = random_convolution(n, m, gen, device=device)
-            xt = reconstruct(oamp(measure(sel, op), op, frame), frame)
+            kappa = optimal_kappa(rho, sigma, eps, frame.gamma, n)
+            xt = reconstruct(oamp(measure(sel, op), op, frame, kappa=kappa), frame)
             dist = cumulant_distance(sel, xt)
             records.append({
                 "snr": snr_db,

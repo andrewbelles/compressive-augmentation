@@ -49,18 +49,37 @@ test -f "$MANIFEST" || { echo "FATAL: missing $MANIFEST (run acquire_rml2018.sba
 
 echo "START hypotheses seed=$SEED node=$(hostname) $(date -Iseconds)"
 
-for MECH in operator_isometry backprojection_law nuisance_equivariance \
-            dictionary_compressibility se_calibration operator_draw_variance \
-            cumulant_margin label_nuisance_tradeoff admissible_band; do
-    echo "--- $MECH seed=$SEED ---"
+SNRS=-10,0,6,10,14,18,22,26,30
+COARSE=0.3,0.4,0.5,0.6,0.7,0.8,0.9
+FINE=0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95
+
+run () {  # mechanism, ratios, extra flags
+    echo "--- $1 seed=$SEED ${3:-} ---"
     PYTHONPATH=src python run_hypotheses.py \
-        --mechanism "$MECH" \
-        --seed "$SEED" \
-        --hdf5 "$HDF5" \
-        --manifest "$MANIFEST" \
-        --out "$ARTIFACTS" \
-        --per-group 64 \
-        --draws 64
+        --mechanism "$1" --seed "$SEED" \
+        --hdf5 "$HDF5" --manifest "$MANIFEST" --out "$ARTIFACTS" \
+        --snrs "$SNRS" --ratios "$2" --per-group 64 ${3:-}
+}
+
+# operator algebra and controls: no measurement-noise axis
+run operator_isometry "$COARSE"
+run operator_equivariance "$COARSE"
+run backprojection_law "$COARSE"
+run dictionary_compressibility "$COARSE"
+run operator_draw_variance "$COARSE" "--draws 64"
+
+# measurement SNR is the second knob: sigma sets the ceiling, so the knee needs the sweep
+for MSNR in 30 20 10; do
+    run se_calibration "$COARSE" "--measurement-snr $MSNR"
+    run se_kappa_prediction "$COARSE" "--measurement-snr $MSNR"
+    run cumulant_margin "$COARSE" "--measurement-snr $MSNR"
+    run admissible_band "$COARSE" "--measurement-snr $MSNR"
+    run se_knee "$FINE" "--measurement-snr $MSNR"
+    run kernel_geometry "$FINE" "--measurement-snr $MSNR"
+    run label_nuisance_tradeoff "$FINE" "--measurement-snr $MSNR"
 done
+run se_knee "$FINE"          # noiseless reference: the argmax should sit at the boundary
+run kernel_geometry "$FINE"
+run label_nuisance_tradeoff "$FINE"
 
 echo "DONE hypotheses seed=$SEED $(date -Iseconds)"

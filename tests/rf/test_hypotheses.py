@@ -1,3 +1,4 @@
+import math
 import torch
 
 from dsp.frames import gabor_frame, synthesis
@@ -37,7 +38,8 @@ class TestDriversRun:
             recs = fn(frames, meta, [0.6, 0.9], seed=0, device=device, **kw)
             assert len(recs) >= 1
             assert all(isinstance(r, dict) and r for r in recs)
-            if name != "operator_isometry":
+            # operator-algebra mechanisms are signal-independent, so they carry no SNR stratum
+            if name not in ("operator_isometry", "operator_equivariance"):
                 assert {r["snr"] for r in recs} == {10, 20}
 
 
@@ -92,6 +94,22 @@ class TestNullRejection:
         low = [r["view_diversity"] for r in recs if r["rho"] == 0.3]
         high = [r["view_diversity"] for r in recs if r["rho"] == 0.95]
         assert sum(high) / len(high) < sum(low) / len(low)
+
+    def test_kernel_geometry_null_holds_under_isotropic_corruption(self, device):
+        # zeta_perp does not vanish in finite samples: independent complex noise in C^N correlates
+        # at ~1/sqrt(N), so the tolerance is derived from N rather than hardcoded
+        x = _sparse_frames(device, b=32)
+        recs = REGISTRY["kernel_geometry"](x, _meta(32), [0.6], 0, device)
+        awgn = [r["zeta_perp"] for r in recs if r["arm"] == "awgn"]
+        cs = [r["zeta_perp"] for r in recs if r["arm"] == "cs"]
+        assert abs(sum(awgn) / len(awgn)) < 3.0 / math.sqrt(N)
+        assert sum(cs) / len(cs) > 3.0 / math.sqrt(N)
+
+    def test_backprojection_has_no_residual_structure(self, device):
+        # a linear arm sharing the operator ensemble isolates "same signal" from "same atoms"
+        recs = REGISTRY["kernel_geometry"](_sparse_frames(device, b=32), _meta(32), [0.6], 0, device)
+        by = {r["arm"]: r for r in recs}
+        assert by["backprojection"]["zeta_perp"] < by["cs"]["zeta_perp"]
 
     def test_empty_band_detected(self):
         assert admissible_band(0.8, 0.7, 0.6)["nonempty"] is False

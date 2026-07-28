@@ -31,6 +31,8 @@ def main() -> int:
     p.add_argument("--snrs", type=str, default="")
     p.add_argument("--dictionary", type=str, default="")
     p.add_argument("--draws", type=int, default=0)
+    p.add_argument("--measurement-snr", type=float, default=None,
+                   help="measurement SNR in dB for y = Phi x + w; omit for a noiseless pipeline")
     p.add_argument("--device", type=str, default="auto")
     args = p.parse_args()
 
@@ -51,9 +53,14 @@ def main() -> int:
         kw["dictionary"] = args.dictionary
     if args.draws:
         kw["draws"] = args.draws
+    if args.measurement_snr is not None:
+        kw["measurement_snr"] = args.measurement_snr
     fn = REGISTRY[args.mechanism]
     accepted = fn.__code__.co_varnames[:fn.__code__.co_argcount]
-    kw = {k: v for k, v in kw.items() if k in accepted}
+    # never filter silently: a dropped measurement_snr would write noiseless rows tagged as noisy
+    unconsumed = sorted(set(kw) - set(accepted))
+    if unconsumed:
+        raise SystemExit(f"{args.mechanism} does not accept {unconsumed}; drop the flag or add it")
 
     records = fn(frames, meta, _parse_ratios(args.ratios), args.seed, device, **kw)
     path = write_records(args.out, args.mechanism, args.seed, records)

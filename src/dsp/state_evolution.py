@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 import torch
 
 from .recovery import complex_soft_threshold, soft_threshold_divergence
@@ -37,6 +39,7 @@ def se_fixed_point(
     seed: int = 0,
     iters: int = 40,
     orthogonal: bool = True,
+    mc: int = 100000,
 ) -> dict:
     """Solve the OAMP state-evolution fixed point, returning tau and denoiser MSE."""
     device = torch.device("cpu")
@@ -47,9 +50,25 @@ def se_fixed_point(
     coef = (1.0 - delta) / delta if orthogonal else 1.0 / delta
     tau2 = sigma * sigma + coef
     for _ in range(iters):
-        v2 = _denoise_mse(tau2 ** 0.5, eps, kappa, gen, device)
+        v2 = _denoise_mse(tau2 ** 0.5, eps, kappa, gen, device, mc)
         tau2 = sigma * sigma + coef * v2
     return {"tau": tau2 ** 0.5, "mse": v2, "delta": delta, "rho": rho}
+
+
+KAPPA_GRID = tuple(round(0.3 + 0.1 * i, 1) for i in range(16))
+KAPPA_MC = 10000
+
+
+@lru_cache(maxsize=4096)
+def optimal_kappa(rho: float, sigma: float, eps: float, gamma: float, n: int) -> float:
+    """Threshold minimizing the SE fixed-point MSE; a prediction, never fitted to realized data."""
+    # rho comes from a discrete grid, so caching on the argument tuple collapses the repeats across
+    # strata; the reduced Monte-Carlo budget is enough for an argmin over a 0.1-spaced grid
+    scored = [
+        (se_fixed_point(rho, sigma, eps, gamma, n, kappa=k, mc=KAPPA_MC)["mse"], k)
+        for k in KAPPA_GRID
+    ]
+    return min(scored)[1]
 
 
 def calibration_snr(rho: float, sigma: float, eps: float, gamma: int, n: int, **kw) -> float:

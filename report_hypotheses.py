@@ -99,7 +99,40 @@ def _plot_cumulants(out_dir: Path, fig_dir: Path):
     _save(fig_dir, "cumulant_margin")
 
 
-FIGURES = (_plot_tradeoff, _plot_se, _plot_compressibility, _plot_backprojection, _plot_cumulants)
+def _plot_kernel_geometry(out_dir: Path, fig_dir: Path):
+    df = load_records(out_dir, "kernel_geometry")
+    if df.empty:
+        return
+    g = _high(df).groupby(["arm", "rho"])["zeta_perp"].mean().unstack(0)
+    plt.figure()
+    for arm in g.columns:
+        plt.plot(g.index, g[arm], "o-", label=arm)
+    plt.axhline(0.0, color="gray", lw=0.8, ls=":")
+    plt.xlabel("rho = m/N")
+    plt.ylabel("zeta_perp (shared structure, gain removed)")
+    plt.title(f"Kernel geometry at matched distortion (SNR >= {HIGH_SNR_DB} dB)")
+    plt.legend()
+    _save(fig_dir, "kernel_geometry")
+
+
+def _plot_retention_vs_diversity(out_dir: Path, fig_dir: Path):
+    df = load_records(out_dir, "label_nuisance_tradeoff")
+    if df.empty or "arm" not in df:
+        return
+    plt.figure()
+    for arm, sub in _high(df).groupby("arm"):
+        g = sub.groupby("rho")[["view_diversity", "label_retention"]].mean()
+        g = g.sort_values("view_diversity")
+        plt.plot(g["view_diversity"], g["label_retention"], "o-", label=arm)
+    plt.xlabel("view diversity V")
+    plt.ylabel("label retention R")
+    plt.title("Retention at matched diversity")
+    plt.legend()
+    _save(fig_dir, "retention_vs_diversity")
+
+
+FIGURES = (_plot_kernel_geometry, _plot_retention_vs_diversity, _plot_tradeoff, _plot_se,
+           _plot_compressibility, _plot_backprojection, _plot_cumulants)
 
 
 def main() -> int:

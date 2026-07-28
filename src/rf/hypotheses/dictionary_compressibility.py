@@ -4,7 +4,7 @@ from common.statistics import scatter_ratio
 from dsp.frames import analysis
 from dsp.recovery import sparse_code
 from rf.hypotheses._artifacts import mods_at, normalize_power, snr_strata
-from rf.signal_model import DICTIONARIES, build_dictionary, k_eff
+from rf.signal_model import CONFUSABLE_MODS, DICTIONARIES, build_dictionary, k_eff
 
 # Layer II Eq. 2: frames admit a sparse synthesis whose support carries the modulation class.
 # Accept: a dictionary reaches k near k_eff and its coefficient support separates classes; the DFT
@@ -53,6 +53,12 @@ def run(frames, meta, ratios, seed, device) -> list[dict]:
             k90, k99 = _k_energy(coeffs, 0.9), _k_energy(coeffs, 0.99)
             span = _circular_span(analysis(sel, frame) if name == "dft" else coeffs)
             sep = scatter_ratio(coeffs.abs(), mods)
+            # sub-hypothesis: the 15 RRC-PSD-sharing classes, where the label actually lives
+            conf = [j for j, mm in enumerate(mods) if mm in CONFUSABLE_MODS]
+            sep_conf = float("nan")
+            if len(conf) > 1:
+                rows_conf = torch.tensor(conf, device=device)
+                sep_conf = scatter_ratio(coeffs[rows_conf].abs(), [mods[j] for j in conf])
             by_mod: dict[str, list[int]] = {}
             for j, mod in enumerate(mods):
                 by_mod.setdefault(mod, []).append(j)
@@ -68,8 +74,10 @@ def run(frames, meta, ratios, seed, device) -> list[dict]:
                     "k90_over_n": k90[sub].mean().item() / n,
                     "k90_over_d": k90[sub].mean().item() / frame.n_atoms,
                     "k_eff_pred": pred,
+                    "k99_over_k_eff": k99[sub].mean().item() / pred,
                     "circular_span_ratio": span[sub].mean().item(),
                     "class_scatter_ratio": sep,
+                    "class_scatter_confusable": sep_conf,
                     "fista_iters": iters,
                     "fista_converged": iters < MAX_ITERS,
                 })

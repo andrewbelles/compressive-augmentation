@@ -14,6 +14,7 @@ from dsp.recovery import (
 
 N = 96
 GAMMA = 2
+KAPPA = 1.6
 
 
 def _gen(device, seed=0):
@@ -55,7 +56,7 @@ class TestRecovery:
         alpha = _planted(device, frame.n_atoms)
         x = synthesis(alpha, frame)
         y = measure(x, op)
-        assert _snr_db(x, reconstruct(oamp(y, op, frame), frame)) > 40.0
+        assert _snr_db(x, reconstruct(oamp(y, op, frame, kappa=KAPPA), frame)) > 40.0
         assert _snr_db(x, reconstruct(lasso_fista(y, op, frame, lam=0.02, iters=400), frame)) > 15.0
 
     def test_oamp_reaches_high_snr_when_exactly_sparse(self, device):
@@ -63,7 +64,7 @@ class TestRecovery:
         frame = gabor_frame(N, N, N // 2, device=device)
         op = random_convolution(N, round(0.9 * N), _gen(device, 1), device=device)
         x = synthesis(_planted(device, frame.n_atoms), frame)
-        assert _snr_db(x, reconstruct(oamp(measure(x, op), op, frame), frame)) > 40.0
+        assert _snr_db(x, reconstruct(oamp(measure(x, op), op, frame, kappa=KAPPA), frame)) > 40.0
 
     def test_output_stays_bounded_on_near_tone(self, device):
         # null: an unnormalized linear stage compounds on frames whose atoms never fall below
@@ -75,7 +76,7 @@ class TestRecovery:
             x = x / x.abs().pow(2).mean(-1, keepdim=True).sqrt()
             for rho in (0.3, 0.7):
                 op = random_convolution(N, round(rho * N), _gen(device, 1), device=device)
-                xhat = reconstruct(oamp(measure(x, op), op, frame), frame)
+                xhat = reconstruct(oamp(measure(x, op), op, frame, kappa=KAPPA), frame)
                 assert xhat.norm().item() < 2.0 * x.norm().item()
                 assert _snr_db(x, xhat) > 0.0
 
@@ -83,7 +84,7 @@ class TestRecovery:
         frame = gabor_frame(N, N, N // 2, device=device)
         op = random_convolution(N, round(0.9 * N), _gen(device, 1), device=device)
         y = measure(synthesis(_planted(device, frame.n_atoms), frame), op)
-        s = oamp(y, op, frame)
+        s = oamp(y, op, frame, kappa=KAPPA)
         innov = apply_AH(y - apply_A(s, op, frame), op, frame)
         tau = innov.abs().pow(2).mean(dim=-1, keepdim=True).clamp_min(1e-12).sqrt()
         div = soft_threshold_divergence(s + innov, 1.6 * tau)
@@ -105,7 +106,7 @@ class TestRecovery:
         op = random_convolution(N, round(0.9 * N), _gen(device, 1), device=device)
         alpha = _planted(device, frame.n_atoms)
         y = measure(synthesis(alpha, frame), op)
-        xo = reconstruct(oamp(y, op, frame), frame)
+        xo = reconstruct(oamp(y, op, frame, kappa=KAPPA), frame)
         xf = reconstruct(lasso_fista(y, op, frame, 0.01, 500), frame)
         corr = (xo.flatten().conj() @ xf.flatten()).abs() / (xo.norm() * xf.norm())
         assert corr.item() > 0.9
@@ -127,6 +128,6 @@ class TestDeviceParity:
         op_c = random_convolution(N, round(0.7 * N), _gen("cpu", 1), device="cpu")
         alpha = _planted(torch.device("cpu"), frame_c.n_atoms)
         y_c = measure(synthesis(alpha, frame_c), op_c)
-        out_c = oamp(y_c, op_c, frame_c)
-        out_g = oamp(y_c.cuda(), op_c.to("cuda"), frame_c.to("cuda"))
+        out_c = oamp(y_c, op_c, frame_c, kappa=KAPPA)
+        out_g = oamp(y_c.cuda(), op_c.to("cuda"), frame_c.to("cuda"), kappa=KAPPA)
         assert torch.allclose(out_c, out_g.cpu(), atol=1e-3)

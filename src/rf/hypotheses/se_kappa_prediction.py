@@ -1,15 +1,16 @@
 import torch
 
-from dsp.operators import random_convolution, measure, measurement_noise
+from dsp.operators import measure, measurement_noise, random_convolution
 from dsp.recovery import oamp, reconstruct
-from dsp.state_evolution import calibration_snr, optimal_kappa, se_fixed_point
+from dsp.state_evolution import optimal_kappa
 from rf.hypotheses._artifacts import normalize_power, snr_strata
 from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, k_eff
 
-# Layer IV Result 2: state evolution predicts realized OAMP recovery SNR of the CS pipeline.
-# eps comes from Proposition 1 and sigma from the measurement noise only: channel noise already
-# sits inside x, hence inside alpha, so carrying it here too would double-count it.
-# Accept: SE tracks realized SNR at the predicted threshold.
+# Layer IV Result 2 falsified through the threshold rather than through an SNR value: SE must
+# predict which threshold is best, not merely a number to compare against. Accept: the predicted
+# kappa is the measured argmax and costs little regret.
+
+SWEEP = (0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6)
 
 
 def _snr(x, xhat):
@@ -34,23 +35,22 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
             op = random_convolution(n, m, gen, device=device)
             clean = measure(sel, op)
             y = clean + measurement_noise(clean, measurement_snr, op, gen)
-            kappa = optimal_kappa(rho, sigma, eps, frame.gamma, n)
-            realized = _snr(sel, reconstruct(oamp(y, op, frame, kappa=kappa), frame))
-            fp = se_fixed_point(rho, sigma, eps, frame.gamma, n, kappa=kappa)
-            se = calibration_snr(rho, sigma, eps, frame.gamma, n, kappa=kappa)
+            pred = optimal_kappa(rho, sigma, eps, frame.gamma, n)
+            scored = [(_snr(sel, reconstruct(oamp(y, op, frame, kappa=k), frame)), k) for k in SWEEP]
+            best_snr, best_k = max(scored)
+            at_pred = _snr(sel, reconstruct(oamp(y, op, frame, kappa=pred), frame))
             records.append({
                 "dictionary": dictionary,
                 "snr": snr_db,
                 "measurement_snr": measurement_snr if measurement_snr is not None else float("inf"),
                 "rho": rho,
                 "m": m,
-                "sigma": sigma,
                 "eps": eps,
-                "eps_source": "prop1",
-                "kappa": kappa,
-                "realized_snr": realized,
-                "se_snr": se,
-                "se_mse": fp["mse"],  # exposes the 1e-12 clamp sitting behind se_snr
-                "gap": se - realized,
+                "kappa_pred": pred,
+                "kappa_meas": best_k,
+                "kappa_err": abs(pred - best_k),
+                "snr_at_pred": at_pred,
+                "snr_at_best": best_snr,
+                "regret": best_snr - at_pred,
             })
     return records

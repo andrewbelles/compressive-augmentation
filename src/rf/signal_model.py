@@ -10,6 +10,17 @@ N_CLASSES = 24
 SAMPLES_PER_SYMBOL = 8
 RRC_ROLLOFF = 0.35
 
+# classes sharing an RRC power spectrum: the label lives only in higher-order statistics, so the
+# spectrally distinct classes inflate any separability score computed over all 24
+CONFUSABLE_MODS = (
+    "BPSK", "QPSK", "OQPSK", "PSK8", "PSK16", "PSK32",
+    "QAM16", "QAM32", "QAM64", "QAM128", "QAM256",
+    "APSK16", "APSK32", "APSK64", "APSK128",
+)
+
+# three strata below the compressibility transition for contrast, six in the signal regime
+DEFAULT_SNRS = (-10, 0, 6, 10, 14, 18, 22, 26, 30)
+
 
 def k_eff(n: int = FRAME_LEN, beta: float = RRC_ROLLOFF, kappa: int = SAMPLES_PER_SYMBOL) -> float:
     """Compressibility budget k_eff = n (1 + beta) / kappa (Eq. 2)."""

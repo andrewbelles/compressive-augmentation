@@ -81,8 +81,8 @@ def oamp(
     y: torch.Tensor,
     op: ConvOperator,
     frame: Frame,
+    kappa: float,
     iters: int = 120,
-    kappa: float = 1.6,
     damping: float = 1.0,
 ) -> torch.Tensor:
     """Complex OAMP recovery: divergence-free soft-threshold with matched linear stage."""

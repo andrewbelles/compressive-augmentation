@@ -1,6 +1,9 @@
 from . import (
     operator_isometry,
-    nuisance_equivariance,
+    operator_equivariance,
+    kernel_geometry,
+    se_kappa_prediction,
+    se_knee,
     dictionary_compressibility,
     se_calibration,
     backprojection_law,
@@ -14,7 +17,10 @@ from . import (
 
 REGISTRY = {
     "operator_isometry": operator_isometry.run,
-    "nuisance_equivariance": nuisance_equivariance.run,
+    "operator_equivariance": operator_equivariance.run,
+    "kernel_geometry": kernel_geometry.run,
+    "se_kappa_prediction": se_kappa_prediction.run,
+    "se_knee": se_knee.run,
     "dictionary_compressibility": dictionary_compressibility.run,
     "se_calibration": se_calibration.run,
     "backprojection_law": backprojection_law.run,

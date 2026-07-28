@@ -3,10 +3,16 @@ import math
 import torch
 
 from dsp.operators import (
+    ConvOperator,
+    SRHTOperator,
+    _fwht,
     random_convolution,
     measure,
+    measurement_noise,
     adjoint,
     backproject,
+    srht,
+    srht_measure,
     to_dense,
 )
 from dsp.frames import gabor_frame, dft_frame, synthesis
@@ -84,6 +90,86 @@ class TestPartialIsometry:
         sv = torch.linalg.svdvals(a)
         nz = sv[sv > 1e-3]
         assert nz.std() / nz.mean() > 0.05
+
+
+class TestEquivarianceIdentities:
+    def test_conv_timing_identity_is_exact(self, device):
+        # C circulant commutes with T_a, and Omega selected from a shifted signal is Omega - a
+        op = _op(device)
+        a = N // 4
+        x = torch.randn(4, N, dtype=torch.complex64, device=device, generator=_gen(device, 3))
+        shifted_op = ConvOperator(N, M, (op.omega - a) % N, op.theta)
+        lhs = measure(torch.roll(x, a, dims=-1), op)
+        assert (lhs - measure(x, shifted_op)).abs().max().item() < 1e-5
+
+    def test_conv_ongrid_cfo_identity_is_exact(self, device):
+        # Phi M_b = U Phi' with U unimodular and Phi' carrying cyclically shifted phases
+        op = _op(device)
+        b = 3
+        k = torch.arange(N, device=device)
+        x = torch.randn(4, N, dtype=torch.complex64, device=device, generator=_gen(device, 3))
+        mod = x * torch.exp(2j * math.pi * b * k / N)
+        cfo_op = ConvOperator(N, M, op.omega, torch.roll(op.theta, -b))
+        err = (measure(mod, op).abs() - measure(x, cfo_op).abs()).abs().max().item()
+        assert err < 1e-5
+
+    def test_srht_timing_identity_fails(self, device):
+        # the null: random signs do not absorb cyclic shifts, so SRHT is not G-equivariant
+        op = srht(N, M, _gen(device, 5), device=device)
+        a = N // 4
+        x = torch.randn(4, N, dtype=torch.complex64, device=device, generator=_gen(device, 3))
+        shifted_op = SRHTOperator(N, M, (op.omega - a) % N, op.signs)
+        lhs = srht_measure(torch.roll(x, a, dims=-1), op)
+        rel = (lhs - srht_measure(x, shifted_op)).abs().max() / lhs.abs().mean()
+        assert rel.item() > 0.5
+
+
+class TestSRHT:
+    def test_is_scaled_partial_isometry(self, device):
+        op = srht(N, M, _gen(device, 5), device=device)
+        eye = torch.eye(N, dtype=torch.complex64, device=device)
+        phi = srht_measure(eye, op).transpose(-1, -2)
+        gram = phi @ phi.conj().transpose(-1, -2)
+        target = (N / M) * torch.eye(M, dtype=gram.dtype, device=device)
+        assert (gram - target).abs().max().item() < 1e-4
+
+    def test_hadamard_is_orthonormal(self, device):
+        eye = torch.eye(N, dtype=torch.complex64, device=device)
+        assert (_fwht(_fwht(eye)) - eye).abs().max().item() < 1e-5
+
+    def test_rejects_non_power_of_two(self, device):
+        try:
+            srht(63, 20, _gen(device, 0), device=device)
+            assert False
+        except ValueError:
+            pass
+
+
+class TestMeasurementNoise:
+    def test_power_scales_inversely_with_rho(self, device):
+        # per-measurement power is n/m = 1/rho, so sigma^2 tracks it at fixed target SNR
+        x = torch.randn(64, N, dtype=torch.complex64, device=device, generator=_gen(device, 1))
+        x = x / x.abs().pow(2).mean(-1, keepdim=True).sqrt()
+        powers = []
+        for m in (16, 48):
+            op = _op(device, 0, N, m)
+            w = measurement_noise(measure(x, op), 20.0, op, _gen(device, 7))
+            powers.append(w.abs().pow(2).mean().item() * (m / N))
+        assert abs(powers[0] - powers[1]) / powers[0] < 0.15
+
+    def test_none_is_noiseless(self, device):
+        op = _op(device)
+        x = torch.randn(4, N, dtype=torch.complex64, device=device, generator=_gen(device, 1))
+        assert measurement_noise(measure(x, op), None, op, _gen(device, 7)).abs().max().item() == 0.0
+
+    def test_hits_target_snr(self, device):
+        x = torch.randn(64, N, dtype=torch.complex64, device=device, generator=_gen(device, 1))
+        x = x / x.abs().pow(2).mean(-1, keepdim=True).sqrt()
+        op = _op(device)
+        y = measure(x, op)
+        w = measurement_noise(y, 10.0, op, _gen(device, 7))
+        got = 10 * math.log10(y.abs().pow(2).mean().item() / w.abs().pow(2).mean().item())
+        assert abs(got - 10.0) < 1.5
 
 
 class TestDeterminism:
