@@ -83,3 +83,31 @@ class TestDFTFrame:
         # mu is driven by the dictionary's own atom overlap, not by Phi
         assert mutual_coherence(dft_frame(N, device=device).d) < 1e-3
         assert mutual_coherence(gabor_frame(N, 16, 8, device=device).d) > 0.1
+
+
+class TestFastPath:
+    def test_matches_dense_and_is_deterministic(self, device):
+        for window, hop in ((N, N // 2), (32, 8), (16, 8)):
+            frame = gabor_frame(N, window, hop, device=device)
+            a = torch.randn(6, frame.n_atoms, dtype=torch.complex64, device=device)
+            x = torch.randn(6, N, dtype=torch.complex64, device=device)
+            ref_s, ref_a = a @ frame.d.transpose(-1, -2), x @ frame.d.conj()
+            assert ((synthesis(a, frame) - ref_s).abs().max() / ref_s.abs().mean()).item() < 1e-4
+            assert ((analysis(x, frame) - ref_a).abs().max() / ref_a.abs().mean()).item() < 1e-4
+            # seeds are the sweep axis, so artifacts must be reproducible run to run
+            assert (synthesis(a, frame) - synthesis(a, frame)).abs().max().item() == 0.0
+
+    def test_disabled_when_n_freq_does_not_divide_n(self, device):
+        # the phase ramp only agrees with the atom's absolute phase when wrapping cannot change
+        # the residue, so a non-dividing n_freq must fall back rather than be silently wrong
+        frame = gabor_frame(256, 24, 8, device=device)
+        assert frame.lattice is None
+        a = torch.randn(4, frame.n_atoms, dtype=torch.complex64, device=device)
+        assert torch.allclose(synthesis(a, frame), a @ frame.d.transpose(-1, -2))
+
+    def test_batched_leading_dims(self, device):
+        frame = gabor_frame(N, 16, 8, device=device)
+        a = torch.randn(3, 5, frame.n_atoms, dtype=torch.complex64, device=device)
+        out = synthesis(a, frame)
+        assert out.shape == (3, 5, N)
+        assert ((out - a @ frame.d.transpose(-1, -2)).abs().max()).item() < 1e-4

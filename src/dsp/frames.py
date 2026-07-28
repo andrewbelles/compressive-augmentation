@@ -13,13 +13,14 @@ class GaborLattice:
     hop: int
     n_freq: int
     shifts: int
+    taps: int                # window // hop; when exact, overlap-add needs no atomics
     pos: torch.Tensor        # (shifts, window) output indices, already reduced mod n
     win: torch.Tensor        # (shifts, window) scaled window values at those indices
     phase_syn: torch.Tensor  # (shifts, n_freq) cyclic shift as a frequency ramp, carrying n_freq
     phase_ana: torch.Tensor  # (shifts, n_freq) its conjugate, without the n_freq factor
 
     def to(self, device) -> "GaborLattice":
-        return GaborLattice(self.window, self.hop, self.n_freq, self.shifts,
+        return GaborLattice(self.window, self.hop, self.n_freq, self.shifts, self.taps,
                             self.pos.to(device), self.win.to(device),
                             self.phase_syn.to(device), self.phase_ana.to(device))
 
@@ -72,18 +73,22 @@ def gabor_frame(n: int, window: int, hop: int, n_freq: int = None, device=None) 
     scale = 1.0 / math.sqrt(hop)  # makes DD* = (n_freq/hop) I
     cols = [scale * win[j].to(torch.complex64).unsqueeze(1) * freqs for j in range(shifts)]
 
-    shift = torch.arange(shifts, device=device).unsqueeze(1)
-    pos = (idx[:window].unsqueeze(0) + shift * hop) % n
-    ramp = torch.arange(n_freq, device=device).unsqueeze(0)
-    # the gather at (j*hop + u) mod n_freq is a cyclic shift, so carry it as a frequency ramp
-    lat_phase = torch.exp(2j * math.pi * ((ramp * (shift * hop % n_freq)) % n_freq).float() / n_freq)
-    lattice = GaborLattice(
-        window, hop, n_freq, shifts,
-        pos,
-        (scale * win.gather(1, pos)).to(torch.complex64),
-        (n_freq * lat_phase).to(torch.complex64),
-        lat_phase.conj().to(torch.complex64),
-    )
+    lattice = None
+    # the fast path indexes the length-n_freq segment at (j*hop + u) mod n_freq, which only agrees
+    # with the atom's absolute phase when wrapping at n cannot change the residue
+    if n % n_freq == 0:
+        shift = torch.arange(shifts, device=device).unsqueeze(1)
+        pos = (idx[:window].unsqueeze(0) + shift * hop) % n
+        ramp = torch.arange(n_freq, device=device).unsqueeze(0)
+        # the gather is a cyclic shift of the segment, so carry it as a frequency ramp instead
+        lat_phase = torch.exp(2j * math.pi * ((ramp * (shift * hop % n_freq)) % n_freq).float() / n_freq)
+        lattice = GaborLattice(
+            window, hop, n_freq, shifts, window // hop,
+            pos,
+            (scale * win.gather(1, pos)).to(torch.complex64),
+            (n_freq * lat_phase).to(torch.complex64),
+            lat_phase.conj().to(torch.complex64),
+        )
     return Frame(torch.cat(cols, dim=1), n, shifts * n_freq, n_freq / hop, lattice)
 
 
@@ -105,8 +110,17 @@ def synthesis(alpha: torch.Tensor, frame: Frame) -> torch.Tensor:
     lead = alpha.shape[:-1]
     flat = alpha.reshape(-1, lat.shifts, lat.n_freq)
     seg = lat.win * torch.fft.ifft(flat * lat.phase_syn, n=lat.n_freq, dim=-1)
-    out = torch.zeros(flat.shape[0], frame.n, dtype=alpha.dtype, device=alpha.device)
-    out.scatter_add_(1, lat.pos.reshape(1, -1).expand(flat.shape[0], -1), seg.reshape(flat.shape[0], -1))
+    b = flat.shape[0]
+    if lat.taps * lat.hop == lat.window:
+        # sample q*hop + c takes one tap from each of taps consecutive shifts, so the overlap-add is
+        # a sum of shifted slices: no atomics, hence bit-reproducible across runs
+        w = seg.reshape(b, lat.shifts, lat.taps, lat.hop)
+        out = w[:, :, 0, :]
+        for a in range(1, lat.taps):
+            out = out + torch.roll(w[:, :, a, :], a, dims=1)
+        return out.reshape(*lead, frame.n)
+    out = torch.zeros(b, frame.n, dtype=alpha.dtype, device=alpha.device)
+    out.scatter_add_(1, lat.pos.reshape(1, -1).expand(b, -1), seg.reshape(b, -1))
     return out.reshape(*lead, frame.n)
 
 
