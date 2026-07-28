@@ -2,6 +2,7 @@ import pandas as pd
 
 from rf.analysis import ARTIFACT_SOURCE, GATES, VERDICTS, build_verdicts, is_go
 from rf.hypotheses import INFORMATIONAL, REGISTRY
+from rf.hypotheses._artifacts import write_records
 
 # the merges leave three verdicts without a driver of their own, so the redirect is load-bearing
 
@@ -30,6 +31,17 @@ class TestBuildVerdicts:
         out = build_verdicts(tmp_path)
         assert len(out) == len(VERDICTS)
         assert set(out["verdict"]) == {"missing"}
+
+    def test_a_gap_in_one_mechanism_leaves_the_others_scored(self, tmp_path):
+        # preemption can drop the rho band se_calibration reads; the other verdicts must survive it
+        rows = [{"snr": 20, "measurement_snr": 20.0, "rho": r, "knee_measured": 0.4,
+                 "knee_predicted": 0.4, "knee_err": 0.0, "knee_interior": True}
+                for r in (0.3, 0.5)]
+        write_records(tmp_path, "se_knee", 0, rows, "20dB")
+        out = build_verdicts(tmp_path).set_index("mechanism")
+        assert out.loc["se_calibration", "verdict"] == "incomplete"
+        assert out.loc["se_knee", "verdict"] in {"accept", "reject"}
+        assert out.loc["se_knee", "coverage"] == "1 seeds x 1 levels"
 
     def test_go_needs_both_gates(self):
         rows = [{"mechanism": m, "verdict": "accept", "detail": ""} for m in GATES]

@@ -29,6 +29,7 @@
 set -euo pipefail
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
+export CUBLAS_WORKSPACE_CONFIG=:4096:8  # pins cuBLAS algorithm choice; seeds are the sweep axis
 
 SCRATCH=/dartfs-hpc/scratch/$USER
 REPO=$SCRATCH/compressive-augmentation

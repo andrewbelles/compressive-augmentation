@@ -1,3 +1,5 @@
+import sys
+
 import torch
 
 from .operators import ConvOperator, measure, adjoint
@@ -114,7 +116,10 @@ def _oamp_update(s: torch.Tensor, innov: torch.Tensor, kappa: float, gain: float
             out = _compiled_update(torch.view_as_real(s).contiguous(),
                                    torch.view_as_real(innov).contiguous(), kappa, gain)
             return torch.view_as_complex(out.contiguous())
-        except Exception:
+        except Exception as err:
+            # the two paths differ in the last digits, so a silent switch would be untraceable
+            print(f"warning: compiled OAMP update unavailable, using eager ({err})",
+                  file=sys.stderr, flush=True)
             _compile_ok = False
     scaled = innov / gain
     tau = scaled.abs().pow(2).mean(dim=-1, keepdim=True).clamp_min(EPS).sqrt()
