@@ -20,6 +20,25 @@ def _high(df):
     return hi if not hi.empty else df
 
 
+def _by_noise(df):
+    """Split on the measurement-noise axis; sigma sets the ceiling, so pooling averages
+    physically different quantities exactly the way SNR pooling did."""
+    if "measurement_snr" not in df:
+        return [(float("inf"), df)]
+    return [(lv, sub) for lv, sub in df.groupby("measurement_snr") if not sub.empty]
+
+
+def _level(lv):
+    return "noiseless" if lv == float("inf") else f"{lv:g}dB"
+
+
+def _worst(df, fn):
+    """Apply a per-level statistic and return the worst value plus a per-level summary."""
+    vals = {lv: fn(sub) for lv, sub in _by_noise(df)}
+    detail = " ".join(f"{_level(lv)}={v:.2f}" for lv, v in sorted(vals.items()))
+    return max(vals.values()), detail
+
+
 def operator_isometry(df):
     rank_ok = (df["n_nonzero_sv"] == df["n_expected_sv"]).all()
     ok = df["gram_max_err"].max() < 1e-3 and df["sv_cv"].max() < 1e-2 and rank_ok
@@ -73,11 +92,10 @@ def dictionary_compressibility(df):
 def se_calibration(df):
     hi = _high(df)
     band = hi[hi["rho"] >= BAND_RHO]
-    gap = band["gap"].abs().mean()
-    return _verdict("se_calibration", gap < 8.0,
-                    f"mean|gap|(rho>={BAND_RHO},snr>={HIGH_SNR_DB})={gap:.2f} dB "
-                    f"eps={hi['eps'].mean():.4f} ({hi['eps_source'].iloc[0]}) "
-                    f"kappa={hi['kappa'].mean():.2f}")
+    worst, detail = _worst(band, lambda s: s["gap"].abs().mean())
+    return _verdict("se_calibration", worst < 8.0,
+                    f"mean|gap| by measurement SNR: {detail} dB (worst {worst:.2f}) "
+                    f"eps={hi['eps'].mean():.4f} ({hi['eps_source'].iloc[0]})")
 
 
 def operator_draw_variance(df):
@@ -89,43 +107,75 @@ def operator_draw_variance(df):
 
 
 def cumulant_margin(df):
-    hi = _high(df)
-    band = hi[hi["rho"] >= BAND_RHO]
-    dist, margin = band["mean_cumulant_dist"].mean(), band["delta_q10"].mean()
-    return _verdict("cumulant_margin", dist < margin,
-                    f"dist={dist:.3f} vs delta_q10={margin:.3f} (min={band['delta_min'].mean():.3f})")
+    band = _high(df)
+    band = band[band["rho"] >= BAND_RHO]
+    # ratio below 1 means the distortion sits inside the class margin at that noise level
+    worst, detail = _worst(band, lambda s: s["mean_cumulant_dist"].mean() / max(s["delta_q10"].mean(), 1e-12))
+    return _verdict("cumulant_margin", worst < 1.0,
+                    f"dist/delta_q10 by measurement SNR: {detail} (worst {worst:.2f}) "
+                    f"delta_min={band['delta_min'].mean():.3f}")
 
 
 def kernel_geometry(df):
     """H0: at matched distortion the CS kernel is isotropic. Both contrasts must exclude 0."""
-    cs = _high(df)
-    cs = cs[cs["arm"] == "cs"]
+    hi = _high(df)
+    cs = hi[hi["arm"] == "cs"]
+    # already per-cell, so requiring every row keeps each measurement-noise level on its own terms
     vs_awgn = bool((cs["zeta_perp_vs_awgn_lo"] > 0).all())
     vs_bp = bool((cs["zeta_perp_vs_bp_lo"] > 0).all())
-    arms = _high(df).groupby("arm")["zeta_perp"].mean()
+    arms = hi.groupby("arm")["zeta_perp"].mean()
+    by_level = " ".join(f"{_level(lv)}={sub[sub['arm'] == 'cs']['zeta_perp'].mean():.3f}"
+                        for lv, sub in sorted(_by_noise(hi)))
     detail = " ".join(f"{k}={v:.3f}" for k, v in arms.items())
     return _verdict("kernel_geometry", vs_awgn and vs_bp,
-                    f"zeta_perp: {detail} (excludes 0 vs awgn={vs_awgn} vs bp={vs_bp})")
+                    f"zeta_perp: {detail}; cs by measurement SNR: {by_level} "
+                    f"(excludes 0 vs awgn={vs_awgn} vs bp={vs_bp})")
 
 
 def se_kappa_prediction(df):
     hi = _high(df)
-    err, regret = hi["kappa_err"].mean(), hi["regret"].mean()
-    return _verdict("se_kappa_prediction", err <= 0.2 and regret <= 0.5,
-                    f"|kappa_pred-kappa_meas|={err:.2f} regret={regret:.2f} dB "
-                    f"(pred={hi['kappa_pred'].mean():.2f} meas={hi['kappa_meas'].mean():.2f})")
+    worst_err, err_detail = _worst(hi, lambda s: s["kappa_err"].mean())
+    worst_regret, regret_detail = _worst(hi, lambda s: s["regret"].mean())
+    return _verdict("se_kappa_prediction", worst_err <= 0.2 and worst_regret <= 0.5,
+                    f"|kappa_pred-kappa_meas| by measurement SNR: {err_detail} (worst {worst_err:.2f}); "
+                    f"regret: {regret_detail} dB (worst {worst_regret:.2f})")
 
 
 def se_knee(df):
     hi = _high(df)
-    finite = hi[hi["measurement_snr"] < float("inf")]
-    ref = finite if not finite.empty else hi
-    interior = bool(ref["knee_interior"].any())
-    err = ref["knee_err"].mean()
-    return _verdict("se_knee", interior and err <= 0.1,
-                    f"measured={ref['knee_measured'].mean():.3f} "
-                    f"predicted={ref['knee_predicted'].mean():.3f} err={err:.3f} "
-                    f"interior={interior}")
+    # the interior maximum is what sigma buys, so it need only appear at some finite level, but
+    # wherever it appears the location must be the predicted one
+    interior = [(lv, sub) for lv, sub in _by_noise(hi)
+                if lv < float("inf") and bool(sub["knee_interior"].any())]
+    if not interior:
+        _, detail = _worst(hi, lambda s: s["knee_measured"].mean())
+        return _verdict("se_knee", False,
+                        f"no interior maximum at any finite measurement SNR; "
+                        f"argmax by level: {detail}")
+    worst = max(sub["knee_err"].mean() for _, sub in interior)
+    detail = " ".join(f"{_level(lv)}: meas={sub['knee_measured'].mean():.2f} "
+                      f"pred={sub['knee_predicted'].mean():.2f}" for lv, sub in sorted(interior))
+    return _verdict("se_knee", worst <= 0.1,
+                    f"interior at {len(interior)} level(s) -- {detail} (worst err {worst:.3f})")
+
+
+DIVERSITY_GRID = np.linspace(0.05, 0.6, 12)
+
+
+def _retention_margin(sub):
+    """Mean R(cs) - R(awgn) read at matched view diversity, or nan if the arms do not overlap."""
+    curves = {}
+    for arm, rows in sub.groupby("arm"):
+        g = rows.groupby("rho")[["view_diversity", "label_retention"]].mean()
+        g = g.sort_values("view_diversity")
+        curves[arm] = np.interp(DIVERSITY_GRID, g["view_diversity"], g["label_retention"],
+                                left=np.nan, right=np.nan)
+    if "cs" not in curves or "awgn" not in curves:
+        return float("nan"), 0
+    both = ~(np.isnan(curves["cs"]) | np.isnan(curves["awgn"]))
+    if not both.any():
+        return float("nan"), 0
+    return float(np.mean(curves["cs"][both] - curves["awgn"][both])), int(both.sum())
 
 
 def label_nuisance_tradeoff(df):
@@ -133,21 +183,17 @@ def label_nuisance_tradeoff(df):
     hi = _high(df)
     if "arm" not in hi:
         return _verdict("label_nuisance_tradeoff", False, "artifacts predate the awgn arm")
-    grid = np.linspace(0.05, 0.6, 12)
-    curves = {}
-    for arm, sub in hi.groupby("arm"):
-        g = sub.groupby("rho")[["view_diversity", "label_retention"]].mean().sort_values("view_diversity")
-        curves[arm] = np.interp(grid, g["view_diversity"], g["label_retention"],
-                                left=np.nan, right=np.nan)
-    if "cs" not in curves or "awgn" not in curves:
-        return _verdict("label_nuisance_tradeoff", False, "missing an arm")
-    both = ~(np.isnan(curves["cs"]) | np.isnan(curves["awgn"]))
-    if not both.any():
-        return _verdict("label_nuisance_tradeoff", False, "no overlapping diversity range")
-    margin = float(np.mean(curves["cs"][both] - curves["awgn"][both]))
-    return _verdict("label_nuisance_tradeoff", margin > 0.0,
-                    f"mean R(V) margin over awgn = {margin:+.3f} across {int(both.sum())} "
-                    f"matched-diversity points")
+    # each measurement-noise level is its own R(V) curve; averaging points across levels
+    # interpolates through a curve that describes no single operating condition
+    per = {lv: _retention_margin(sub) for lv, sub in _by_noise(hi)}
+    usable = {lv: m for lv, (m, npts) in per.items() if npts > 0 and m == m}
+    if not usable:
+        return _verdict("label_nuisance_tradeoff", False,
+                        "no overlapping diversity range between the cs and awgn arms")
+    detail = " ".join(f"{_level(lv)}={m:+.3f}" for lv, m in sorted(usable.items()))
+    return _verdict("label_nuisance_tradeoff", min(usable.values()) > 0.0,
+                    f"R(V) margin over awgn by measurement SNR: {detail} "
+                    f"(worst {min(usable.values()):+.3f})")
 
 
 def admissible_band(df):
@@ -157,9 +203,12 @@ def admissible_band(df):
         # rho is m/N and cannot exceed 1: the sparsity is past the DT threshold
         return _verdict("admissible_band", False,
                         f"infeasible: rho_dt={hi['rho_dt'].mean():.2f} > 1 at eps={eps.mean():.4f}")
-    return _verdict("admissible_band", bool(hi.iloc[0]["nonempty"]),
-                    f"band=[{hi['lo'].mean():.3f},{hi['hi'].mean():.3f}] "
-                    f"width={hi['width'].mean():.3f} eps={eps.mean():.4f}")
+    # sigma moves both endpoints, so a single pooled band would describe no operating condition
+    bands = " ".join(f"{_level(lv)}=[{sub['lo'].mean():.2f},{sub['hi'].mean():.2f}]"
+                     for lv, sub in sorted(_by_noise(hi)))
+    nonempty = bool(all(sub["nonempty"].all() for _, sub in _by_noise(hi)))
+    return _verdict("admissible_band", nonempty,
+                    f"band by measurement SNR: {bands} eps={eps.mean():.4f}")
 
 
 VERDICTS = {

@@ -36,8 +36,8 @@ def _fista(y, a, lam, lip, iters=150):
     return alpha
 
 
-def _spectral_norm_sq(a, iters=20):
-    v = torch.randn(a.shape[1], dtype=a.dtype, device=a.device)
+def _spectral_norm_sq(a, gen, iters=20):
+    v = torch.randn(a.shape[1], dtype=a.dtype, device=a.device, generator=gen)
     for _ in range(iters):
         v = a.conj().transpose(-1, -2) @ (a @ v)
         v = v / v.norm().clamp_min(1e-12)
@@ -75,7 +75,7 @@ def run(frames, meta, ratios, seed, device, draws=DRAWS, dictionary=DEFAULT_DICT
                 lip_c = frame.gamma * n / m
                 xt_c = synthesis(_fista(measure(sel, op), a_conv, LAM, lip_c), frame)
                 xt_g = synthesis(_fista(sel @ gmat.transpose(-1, -2), a_gauss, LAM,
-                                        _spectral_norm_sq(a_gauss)), frame)
+                                        _spectral_norm_sq(a_gauss, gen)), frame)
                 snr_conv.append(_snr(sel, xt_c).mean().item())
                 snr_gauss.append(_snr(sel, xt_g).mean().item())
             vc = torch.tensor(snr_conv).var().item()

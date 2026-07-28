@@ -27,21 +27,33 @@ def _high(df):
     return hi if not hi.empty else df
 
 
+def _levels(df):
+    """One series per measurement-noise level; sigma sets the ceiling, so curves must not be pooled."""
+    if "measurement_snr" not in df:
+        return [("", df)]
+    out = []
+    for lv, sub in df.groupby("measurement_snr"):
+        out.append(("noiseless" if lv == float("inf") else f"{lv:g} dB", sub))
+    return out
+
+
 def _plot_tradeoff(out_dir: Path, fig_dir: Path):
     df = _load(out_dir, "label_nuisance_tradeoff")
     if df.empty:
         return
     df = df[df["arm"] == "cs"] if "arm" in df else df
-    g = _high(df).groupby("rho")[["label_retention", "view_diversity", "nuisance_collapse"]].mean()
     plt.figure()
-    plt.plot(g.index, g["label_retention"], "o-", label="label retention")
-    plt.plot(g.index, g["view_diversity"], "s-", label="view diversity")
-    plt.plot(g.index, g["nuisance_collapse"], "^-", label="nuisance collapse")
+    for label, sub in _levels(_high(df)):
+        g = sub.groupby("rho")[["label_retention", "view_diversity", "nuisance_collapse"]].mean()
+        line, = plt.plot(g.index, g["label_retention"], "o-", label=f"retention {label}".strip())
+        c = line.get_color()
+        plt.plot(g.index, g["view_diversity"], "s--", color=c, label=f"diversity {label}".strip())
+        plt.plot(g.index, g["nuisance_collapse"], "^:", color=c, label=f"collapse {label}".strip())
     plt.axhline(1.0, color="gray", lw=0.8, ls=":")
     plt.xlabel("rho = m/N")
     plt.ylabel("ratio")
     plt.title(f"Label retention vs view diversity (SNR >= {HIGH_SNR_DB} dB)")
-    plt.legend()
+    plt.legend(fontsize=6, ncol=2)
     _save(fig_dir, "label_nuisance_tradeoff")
 
 
@@ -49,14 +61,16 @@ def _plot_se(out_dir: Path, fig_dir: Path):
     df = _load(out_dir, "se_calibration")
     if df.empty:
         return
-    g = _high(df).groupby("rho")[["realized_snr", "se_snr"]].mean()
     plt.figure()
-    plt.plot(g.index, g["se_snr"], "o-", label="SE prediction")
-    plt.plot(g.index, g["realized_snr"], "s-", label="realized OAMP")
+    for label, sub in _levels(_high(df)):
+        g = sub.groupby("rho")[["realized_snr", "se_snr"]].mean()
+        line, = plt.plot(g.index, g["se_snr"], "o--", label=f"SE {label}".strip())
+        plt.plot(g.index, g["realized_snr"], "s-", color=line.get_color(),
+                 label=f"realized {label}".strip())
     plt.xlabel("rho = m/N")
     plt.ylabel("recovery SNR (dB)")
     plt.title(f"Layer IV calibration (SNR >= {HIGH_SNR_DB} dB)")
-    plt.legend()
+    plt.legend(fontsize=7)
     _save(fig_dir, "se_calibration")
 
 
@@ -94,15 +108,18 @@ def _plot_cumulants(out_dir: Path, fig_dir: Path):
     df = _load(out_dir, "cumulant_margin")
     if df.empty:
         return
-    g = _high(df).groupby("rho")[["mean_cumulant_dist", "delta_q10", "delta_min"]].mean()
+    hi = _high(df)
     plt.figure()
-    plt.plot(g.index, g["mean_cumulant_dist"], "o-", label="||T(x~) - T(x)||")
-    plt.plot(g.index, g["delta_q10"], "--", label="class margin (q10)")
-    plt.plot(g.index, g["delta_min"], ":", label="class margin (min)")
+    for label, sub in _levels(hi):
+        g = sub.groupby("rho")["mean_cumulant_dist"].mean()
+        plt.plot(g.index, g.values, "o-", label=f"||T(x~) - T(x)|| {label}".strip())
+    g = hi.groupby("rho")[["delta_q10", "delta_min"]].mean()
+    plt.plot(g.index, g["delta_q10"], "k--", label="class margin (q10)")
+    plt.plot(g.index, g["delta_min"], "k:", label="class margin (min)")
     plt.xlabel("rho = m/N")
     plt.ylabel("cumulant distance")
     plt.title(f"Layer V margin (SNR >= {HIGH_SNR_DB} dB)")
-    plt.legend()
+    plt.legend(fontsize=7)
     _save(fig_dir, "cumulant_margin")
 
 
@@ -110,15 +127,17 @@ def _plot_kernel_geometry(out_dir: Path, fig_dir: Path):
     df = load_records(out_dir, "kernel_geometry")
     if df.empty:
         return
-    g = _high(df).groupby(["arm", "rho"])["zeta_perp"].mean().unstack(0)
     plt.figure()
-    for arm in g.columns:
-        plt.plot(g.index, g[arm], "o-", label=arm)
+    for label, lev in _levels(_high(df)):
+        g = lev.groupby(["arm", "rho"])["zeta_perp"].mean().unstack(0)
+        for arm in g.columns:
+            plt.plot(g.index, g[arm], "o-" if arm == "cs" else "s--",
+                     label=f"{arm} {label}".strip())
     plt.axhline(0.0, color="gray", lw=0.8, ls=":")
     plt.xlabel("rho = m/N")
     plt.ylabel("zeta_perp (shared structure, gain removed)")
     plt.title(f"Kernel geometry at matched distortion (SNR >= {HIGH_SNR_DB} dB)")
-    plt.legend()
+    plt.legend(fontsize=6, ncol=2)
     _save(fig_dir, "kernel_geometry")
 
 
@@ -127,14 +146,19 @@ def _plot_retention_vs_diversity(out_dir: Path, fig_dir: Path):
     if df.empty or "arm" not in df:
         return
     plt.figure()
-    for arm, sub in _high(df).groupby("arm"):
-        g = sub.groupby("rho")[["view_diversity", "label_retention"]].mean()
-        g = g.sort_values("view_diversity")
-        plt.plot(g["view_diversity"], g["label_retention"], "o-", label=arm)
+    for label, lev in _levels(_high(df)):
+        for arm, style in (("cs", "o-"), ("awgn", "s--")):
+            sub = lev[lev["arm"] == arm]
+            if sub.empty:
+                continue
+            g = sub.groupby("rho")[["view_diversity", "label_retention"]].mean()
+            g = g.sort_values("view_diversity")
+            plt.plot(g["view_diversity"], g["label_retention"], style,
+                     label=f"{arm} {label}".strip())
     plt.xlabel("view diversity V")
     plt.ylabel("label retention R")
     plt.title("Retention at matched diversity")
-    plt.legend()
+    plt.legend(fontsize=7)
     _save(fig_dir, "retention_vs_diversity")
 
 
