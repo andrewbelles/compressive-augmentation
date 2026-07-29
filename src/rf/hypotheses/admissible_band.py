@@ -21,7 +21,9 @@ def _invert(n, eps, sigma, gamma, floor, ascending) -> float:
             return r
         if not ascending and snr > floor:
             return r
-    return GRID[-1] if ascending else GRID[0]
+    # never reaching the floor means no rho is degenerate, so the ceiling is the top of the grid;
+    # returning the bottom would report an inverted band
+    return GRID[-1]
 
 
 def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
@@ -33,7 +35,7 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
     sigma = 0.0 if measurement_snr is None else 10.0 ** (-measurement_snr / 20.0)
     records = []
     for snr_db, rows in snr_strata(meta, x.shape[0]).items():
-        dt = frame.gamma * statistical_dimension_l1(eps)
+        dt = statistical_dimension_l1(k_eff(n) / n)
         label = _invert(n, eps, sigma, frame.gamma, LABEL_FLOOR_DB, ascending=True)
         ceil_rho = _invert(n, eps, sigma, frame.gamma, DEGENERACY_CEIL_DB, ascending=False)
         band = assemble_band(dt, label, ceil_rho)
@@ -45,7 +47,7 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
             "eps": eps,
             "eps_source": "prop1",
             "rho_dt": dt,
-            "rho_dt_pred": rho_dt(n, int(frame.gamma)),
+            "rho_dt_pred": rho_dt(n),
             "rho_label": label,
             "rho_max": ceil_rho,
             "lo": band["lo"],

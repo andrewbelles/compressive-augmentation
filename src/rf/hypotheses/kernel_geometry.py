@@ -107,6 +107,11 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
             tmean = target.mean().item()
 
             arms = {"cs": cs}
+            # the debiased refit is the better estimator but removes shrinkage structure from the
+            # error, which is what zeta_perp measures; carrying both lets analysis compare the two
+            # at matched distortion instead of at matched rho
+            arms["cs_shrunk"] = [cs_view(sel, ops[j], frame, kappa, noise[j], debiased=False)
+                                 for j in (0, 1)]
             arms["awgn"] = [awgn_view(sel, target, gens[j]) for j in (0, 1)]
             arms["backprojection"] = [backprojection_view(sel, tmean, seed * 100 + j, device)[0]
                                       for j in (0, 1)]

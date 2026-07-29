@@ -54,8 +54,20 @@ def write_records(out_dir: Path, mechanism: str, seed: int, records: list[dict],
 
 
 def load_records(out_dir: Path, mechanism: str) -> pd.DataFrame:
-    """Concatenate all seed artifacts for a mechanism."""
+    """Concatenate all seed artifacts for a mechanism, rejecting mixed schemas."""
     paths = sorted(Path(out_dir).glob(f"{mechanism}_seed*.parquet"))
     if not paths:
         return pd.DataFrame()
-    return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
+    frames = {p: pd.read_parquet(p) for p in paths}
+    # the glob cannot tell a stale untagged artifact from a current tagged one, and pooling two
+    # schemas silently averages columns a previous code version defined differently
+    schemas = {p: frozenset(df.columns) for p, df in frames.items()}
+    newest = max(schemas.values(), key=lambda s: sum(v == s for v in schemas.values()))
+    stale = sorted(p.name for p, s in schemas.items() if s != newest)
+    if stale:
+        missing = sorted(newest - schemas[Path(out_dir) / stale[0]])
+        raise ValueError(
+            f"{mechanism}: {len(stale)} artifact(s) carry a different schema and would be pooled "
+            f"with {len(paths) - len(stale)} current one(s); columns missing: {missing}. "
+            f"Delete or re-tag: {stale}")
+    return pd.concat(frames.values(), ignore_index=True)

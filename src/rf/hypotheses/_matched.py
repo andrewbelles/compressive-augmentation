@@ -2,7 +2,7 @@ import torch
 
 from dsp.frames import synthesis
 from dsp.operators import backproject, measure, measurement_noise, random_convolution
-from dsp.recovery import oamp, reconstruct
+from dsp.recovery import debias, oamp, reconstruct
 
 # augmentation arms produced at a matched signal-domain distortion, so comparisons are made at equal
 # corruption rather than at equal rho; load-bearing for both GO gates, hence tested on its own
@@ -21,10 +21,16 @@ def draw_noise(x, op, measurement_snr, gen):
     return measurement_noise(measure(x, op), measurement_snr, op, gen)
 
 
-def cs_view(x, op, frame, kappa, noise=None):
+def cs_view(x, op, frame, kappa, noise=None, debiased=True):
     """Full CS round trip, the reference arm that defines the target distortion."""
     y = measure(x, op)
-    return reconstruct(oamp(y if noise is None else y + noise, op, frame, kappa=kappa), frame)
+    y = y if noise is None else y + noise
+    alpha = oamp(y, op, frame, kappa=kappa)
+    # soft thresholding shrinks amplitude non-uniformly, and the confusable classes are separated
+    # by amplitude structure, so the shrunk estimate discards the label the view is meant to keep
+    if debiased:
+        alpha = debias(alpha, y, op, frame)
+    return reconstruct(alpha, frame)
 
 
 def awgn_view(x, target, gen):

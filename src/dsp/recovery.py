@@ -147,3 +147,45 @@ def oamp(
 def reconstruct(alpha: torch.Tensor, frame: Frame) -> torch.Tensor:
     """Map recovered coefficients back to a signal view, x_tilde = D alpha."""
     return synthesis(alpha, frame)
+
+
+def support_of(alpha: torch.Tensor, m: int, rel_tol: float = 1e-3) -> torch.Tensor:
+    """Active set of a recovered coefficient vector, capped to stay overdetermined given m rows."""
+    mag = alpha.abs()
+    # the divergence-free update rescales inactive coefficients by -div/(1-div) rather than to
+    # zero, so an exact-zero test selects everything and the refit becomes underdetermined
+    keep = (mag > rel_tol * mag.amax(-1, keepdim=True))
+    cap = max(1, m // 2)
+    if int(keep.sum(-1).max()) > cap:
+        idx = mag.topk(cap, dim=-1).indices
+        capped = torch.zeros_like(keep)
+        capped.scatter_(-1, idx, True)
+        keep = keep & capped
+    return keep
+
+
+def debias(alpha: torch.Tensor, y: torch.Tensor, op: ConvOperator, frame: Frame,
+           iters: int = 40) -> torch.Tensor:
+    """Refit amplitudes on the recovered support, removing the soft-threshold shrinkage bias."""
+    support = support_of(alpha, op.m).to(alpha.dtype)
+    if not bool(support.any()):
+        return alpha
+    # conjugate gradient on the support-restricted normal equations; masking after every apply
+    # keeps the iterate in the support, so this solves min ||y - A_S beta|| without forming A_S
+    def normal(v):
+        return support * apply_AH(apply_A(support * v, op, frame), op, frame)
+
+    beta = support * alpha
+    r = support * apply_AH(y, op, frame) - normal(beta)
+    p = r.clone()
+    rs = r.abs().pow(2).sum(-1, keepdim=True)
+    for _ in range(iters):
+        ap = normal(p)
+        denom = (p.conj() * ap).sum(-1, keepdim=True).real
+        step = rs / denom.clamp_min(EPS)
+        beta = beta + step * p
+        r = r - step * ap
+        rs_next = r.abs().pow(2).sum(-1, keepdim=True)
+        p = r + (rs_next / rs.clamp_min(EPS)) * p
+        rs = rs_next
+    return support * beta

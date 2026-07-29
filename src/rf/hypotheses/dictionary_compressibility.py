@@ -14,6 +14,15 @@ LAM = 0.05
 MAX_ITERS = 400
 
 
+def _separability_features(coeffs):
+    """Magnitude plus relative phase; PSK orders differ in phase, which |.| alone discards."""
+    mag = coeffs.abs()
+    lead = coeffs.gather(-1, mag.argmax(-1, keepdim=True))
+    # phase is only meaningful against a per-frame reference, the strongest atom
+    rel = coeffs * (lead.conj() / lead.abs().clamp_min(1e-12))
+    return torch.cat([mag, rel.real, rel.imag], dim=-1)
+
+
 def _k_energy(coeffs, frac):
     p = coeffs.abs().pow(2)
     p = p / p.sum(-1, keepdim=True).clamp_min(1e-12)
@@ -52,13 +61,14 @@ def run(frames, meta, ratios, seed, device) -> list[dict]:
             coeffs, iters = sparse_code(sel, frame, LAM, max_iters=MAX_ITERS)
             k90, k99 = _k_energy(coeffs, 0.9), _k_energy(coeffs, 0.99)
             span = _circular_span(analysis(sel, frame) if name == "dft" else coeffs)
-            sep = scatter_ratio(coeffs.abs(), mods)
+            sep = scatter_ratio(_separability_features(coeffs), mods)
             # sub-hypothesis: the 15 RRC-PSD-sharing classes, where the label actually lives
             conf = [j for j, mm in enumerate(mods) if mm in CONFUSABLE_MODS]
             sep_conf = float("nan")
             if len(conf) > 1:
                 rows_conf = torch.tensor(conf, device=device)
-                sep_conf = scatter_ratio(coeffs[rows_conf].abs(), [mods[j] for j in conf])
+                sep_conf = scatter_ratio(_separability_features(coeffs[rows_conf]),
+                                         [mods[j] for j in conf])
             by_mod: dict[str, list[int]] = {}
             for j, mod in enumerate(mods):
                 by_mod.setdefault(mod, []).append(j)

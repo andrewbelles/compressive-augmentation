@@ -30,6 +30,39 @@ def random_convolution(n: int, m: int, gen: torch.Generator, device=None) -> Con
     return ConvOperator(n, m, omega, theta.to(torch.complex64))
 
 
+def draw_coherence(op: ConvOperator, frame, probes: int = 64,
+                   gen: torch.Generator | None = None) -> float:
+    """Coherence proxy for the composite A = Phi D, the quantity that varies across draws."""
+    # Phi Phi* = (n/m) I exactly for a unit-modulus theta, so the draw-to-draw spread lives in how
+    # the retained index set lands against the frame atoms, not in Phi's own conditioning
+    device = op.theta.device
+    g = gen or torch.Generator(device=device).manual_seed(0)
+    # sampling with replacement would pair an atom with itself and report coherence 1 exactly
+    idx = torch.randperm(frame.n_atoms, generator=g, device=device)[:probes]
+    atoms = frame.d[:, idx].transpose(-1, -2).contiguous()
+    cols = measure(atoms, op)
+    cols = cols / cols.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    gram = (cols.conj() @ cols.transpose(-1, -2)).abs()
+    gram.fill_diagonal_(0.0)
+    return gram.max().item()
+
+
+def screened_convolution(n: int, m: int, gen: torch.Generator, frame, tries: int = 8,
+                         device=None) -> ConvOperator:
+    """Draw a convolution operator, keeping the flattest composite coherence over `tries` draws."""
+    # rejecting on coherence keeps the operator a convolution, so the exact timing and CFO
+    # equivariance identities survive; a Rademacher pre-modulation would flatten more and break them
+    best, best_mu = None, float("inf")
+    for _ in range(tries):
+        op = random_convolution(n, m, gen, device=device)
+        # a fixed probe set, so candidates are ranked on the same atoms and scoring does not
+        # consume the draw generator
+        mu = draw_coherence(op, frame)
+        if mu < best_mu:
+            best, best_mu = op, mu
+    return best
+
+
 def measure(x: torch.Tensor, op: ConvOperator) -> torch.Tensor:
     """Apply Phi to a batch of complex frames, returning m-dimensional measurements."""
     scale = math.sqrt(op.n / op.m)

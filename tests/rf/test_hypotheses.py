@@ -117,10 +117,22 @@ class TestNullRejection:
         assert sum(cs) / len(cs) > 3.0 / math.sqrt(N)
 
     def test_backprojection_has_no_residual_structure(self, device):
-        # a linear arm sharing the operator ensemble isolates "same signal" from "same atoms"
-        recs = REGISTRY["kernel_geometry"](_sparse_frames(device, b=32), _meta(32), [0.6], 0, device)
+        # a linear arm sharing the operator ensemble isolates "same signal" from "same atoms".
+        # rho=0.6 noiseless recovers to the numerical floor, where every error is roundoff and the
+        # contrast is undefined, so this is read in a regime with real distortion
+        recs = REGISTRY["kernel_geometry"](_sparse_frames(device, b=32), _meta(32), [0.25], 0,
+                                           device, measurement_snr=20.0)
         by = {r["arm"]: r for r in recs}
+        assert by["cs"]["achieved_distortion"] > 1e-3, "regime too easy to carry structure"
         assert by["backprojection"]["zeta_perp"] < by["cs"]["zeta_perp"]
+
+    def test_debias_removes_the_shrinkage_gain(self, device):
+        recs = REGISTRY["kernel_geometry"](_sparse_frames(device, b=32), _meta(32), [0.25], 0,
+                                           device, measurement_snr=20.0)
+        by = {r["arm"]: r for r in recs}
+        # the refit is what the shrunk arm exists to be compared against
+        assert abs(by["cs"]["gain"] - 1.0) < abs(by["cs_shrunk"]["gain"] - 1.0)
+        assert by["cs"]["achieved_distortion"] < by["cs_shrunk"]["achieved_distortion"]
 
     def test_empty_band_detected(self):
         assert admissible_band(0.8, 0.7, 0.6)["nonempty"] is False

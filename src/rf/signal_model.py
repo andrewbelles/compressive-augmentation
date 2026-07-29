@@ -47,12 +47,12 @@ def statistical_dimension_l1(eps: float) -> float:
     return min(best, 1.0)
 
 
-def rho_dt(n: int = FRAME_LEN, gamma: int = 2, beta: float = RRC_ROLLOFF,
+def rho_dt(n: int = FRAME_LEN, beta: float = RRC_ROLLOFF,
            kappa: int = SAMPLES_PER_SYMBOL) -> float:
     """Recovery-stability lower bound on rho from the statistical dimension (Eq. 10)."""
-    d = gamma * n
-    eps = k_eff(n, beta, kappa) / d
-    return gamma * statistical_dimension_l1(eps)
+    # rho is m/n, so the descent cone is normalized by the signal's own dimension. Normalizing by
+    # the redundant atom count and rescaling by gamma admits rho > 1, which m/n cannot reach.
+    return statistical_dimension_l1(k_eff(n, beta, kappa) / n)
 
 
 def admissible_band(rho_dt_val: float, rho_label: float, rho_max: float) -> dict:
