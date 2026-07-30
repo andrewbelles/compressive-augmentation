@@ -134,6 +134,16 @@ class TestNullRejection:
         assert abs(by["cs"]["gain"] - 1.0) < abs(by["cs_shrunk"]["gain"] - 1.0)
         assert by["cs"]["achieved_distortion"] < by["cs_shrunk"]["achieved_distortion"]
 
+    def test_matched_denoiser_reconstructs_closer_than_the_shrunk_arm(self, device):
+        # above the DT threshold, where recovery works and the estimators can be ranked at all
+        recs = REGISTRY["kernel_geometry"](_sparse_frames(device, b=32), _meta(32), [0.6], 0,
+                                           device, measurement_snr=20.0)
+        by = {r["arm"]: r for r in recs}
+        assert "cs_mmse" in by
+        # the arm's reason to exist: no threshold to overshoot, so nothing is shrunk past its value
+        assert by["cs_mmse"]["achieved_distortion"] < by["cs_shrunk"]["achieved_distortion"]
+        assert by["cs_mmse"]["arm_vs_awgn_hi"] >= by["cs_mmse"]["arm_vs_awgn_lo"]
+
     def test_empty_band_detected(self):
         assert admissible_band(0.8, 0.7, 0.6)["nonempty"] is False
         assert admissible_band(0.5, 0.5, 0.9)["nonempty"] is True

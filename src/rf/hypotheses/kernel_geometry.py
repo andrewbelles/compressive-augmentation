@@ -8,16 +8,24 @@ from dsp.frames import analysis
 from dsp.operators import random_convolution
 from dsp.recovery import sparse_code
 from dsp.state_evolution import optimal_kappa
+from rf.augment import dither
 from rf.hypotheses._artifacts import mods_at, normalize_power, snr_strata
 from rf.hypotheses._matched import (
     awgn_view,
     backprojection_view,
+    cs_mmse_view,
     cs_view,
     distortion,
-    draw_noise,
     dropout_view,
+    shrunk_view,
 )
-from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, k_eff
+from rf.signal_model import (
+    DEFAULT_DICTIONARY,
+    build_dictionary,
+    dither_sigma,
+    frame_sparsity,
+    k_eff,
+)
 
 # H0: at matched distortion the CS view distribution is an isotropic Gaussian. Rejecting it is what
 # makes the kernel a new analytic object rather than an expensive way to write down AWGN, whose
@@ -83,8 +91,8 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
     n = frames.shape[-1]
     frame = build_dictionary(dictionary, n, device)
     x = normalize_power(frames)
-    eps = k_eff(n) / frame.n_atoms
-    sigma = 0.0 if measurement_snr is None else 10.0 ** (-measurement_snr / 20.0)
+    eps = frame_sparsity(frame, n)
+    sigma = dither_sigma(measurement_snr)
     k_top = max(1, int(round(k_eff(n))))
     kgrid = torch.arange(n, device=device)
     boot = torch.Generator().manual_seed(seed)
@@ -101,7 +109,7 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
             kappa = optimal_kappa(rho, sigma, eps, frame.gamma, n)
             gens = [torch.Generator(device=device).manual_seed(seed * 100 + j) for j in (0, 1)]
             ops = [random_convolution(n, m, g, device=device) for g in gens]
-            noise = [draw_noise(sel, ops[j], measurement_snr, gens[j]) for j in (0, 1)]
+            noise = [dither(sel, ops[j], measurement_snr, gens[j]) for j in (0, 1)]
             cs = [cs_view(sel, ops[j], frame, kappa, noise[j]) for j in (0, 1)]
             target = distortion(sel, cs[0])
             tmean = target.mean().item()
@@ -110,8 +118,10 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
             # the debiased refit is the better estimator but removes shrinkage structure from the
             # error, which is what zeta_perp measures; carrying both lets analysis compare the two
             # at matched distortion instead of at matched rho
-            arms["cs_shrunk"] = [cs_view(sel, ops[j], frame, kappa, noise[j], debiased=False)
-                                 for j in (0, 1)]
+            arms["cs_shrunk"] = [shrunk_view(sel, ops[j], frame, kappa, noise[j]) for j in (0, 1)]
+            # the matched denoiser drops nothing, so this arm separates anisotropy that survives a
+            # smooth estimator from anisotropy that is soft-threshold shrinkage structure
+            arms["cs_mmse"] = [cs_mmse_view(sel, ops[j], frame, eps, noise[j]) for j in (0, 1)]
             arms["awgn"] = [awgn_view(sel, target, gens[j]) for j in (0, 1)]
             arms["backprojection"] = [backprojection_view(sel, tmean, seed * 100 + j, device)[0]
                                       for j in (0, 1)]
@@ -128,6 +138,8 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
             zp = {a: s["zeta_perp"].cpu() for a, s in stats.items()}
             lo_a, hi_a = _bootstrap_ci(zp["cs"], zp["awgn"], boot)
             lo_b, hi_b = _bootstrap_ci(zp["cs"], zp["backprojection"], boot)
+            # drawn after the two gate contrasts so their resampling stream is unchanged
+            own = {a: _bootstrap_ci(zp[a], zp["awgn"], boot) for a in stats}
             for arm, s in stats.items():
                 records.append({
                     "arm": arm,
@@ -146,5 +158,8 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
                     "zeta_perp_vs_awgn_hi": hi_a,
                     "zeta_perp_vs_bp_lo": lo_b,
                     "zeta_perp_vs_bp_hi": hi_b,
+                    # the row's own arm against awgn, so every arm carries its own isotropy test
+                    "arm_vs_awgn_lo": own[arm][0],
+                    "arm_vs_awgn_hi": own[arm][1],
                 })
     return records

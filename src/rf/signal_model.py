@@ -27,6 +27,16 @@ def k_eff(n: int = FRAME_LEN, beta: float = RRC_ROLLOFF, kappa: int = SAMPLES_PE
     return n * (1.0 + beta) / kappa
 
 
+def frame_sparsity(frame: Frame, n: int = FRAME_LEN) -> float:
+    """Coefficient-domain spike rate eps implied by Prop 1; the SE and kappa inputs."""
+    return k_eff(n) / frame.n_atoms
+
+
+def dither_sigma(dither_snr) -> float:
+    """Per-measurement dither std at a target measurement SNR; None is the sigma = 0 control."""
+    return 0.0 if dither_snr is None else 10.0 ** (-dither_snr / 20.0)
+
+
 def _phi(u: float) -> float:
     return math.exp(-0.5 * u * u) / math.sqrt(2 * math.pi)
 

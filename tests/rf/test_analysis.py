@@ -1,6 +1,15 @@
 import pandas as pd
 
-from rf.analysis import ARTIFACT_SOURCE, GATES, VERDICTS, build_verdicts, is_go
+from rf.analysis import (
+    ARTIFACT_SOURCE,
+    BAND_RHO,
+    GATES,
+    VERDICTS,
+    _in_band,
+    band_endpoints,
+    build_verdicts,
+    is_go,
+)
 from rf.hypotheses import INFORMATIONAL, REGISTRY
 from rf.hypotheses._artifacts import write_records
 
@@ -48,3 +57,34 @@ class TestBuildVerdicts:
         assert is_go(pd.DataFrame(rows))
         rows[0]["verdict"] = "reject"
         assert not is_go(pd.DataFrame(rows))
+
+
+RHOS = [0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 0.95]
+
+
+def _band_rows(lo, hi, level):
+    return [{"snr": 20, "measurement_snr": level, "rho": 0.5, "lo": lo, "hi": hi,
+             "rho_dt": 0.46, "nonempty": lo <= hi, "eps": 0.0422, "eps_source": "prop1"}]
+
+
+class TestOperatingBand:
+    def test_endpoints_come_from_the_artifacts_not_a_constant(self, tmp_path):
+        write_records(tmp_path, "admissible_band", 0, _band_rows(0.55, 0.65, float("inf")),
+                      "noiseless")
+        write_records(tmp_path, "admissible_band", 0, _band_rows(0.7, 0.95, 10.0), "10dB")
+        bands = band_endpoints(tmp_path)
+        assert bands == {float("inf"): (0.55, 0.65), 10.0: (0.7, 0.95)}
+
+    def test_each_level_is_cut_to_its_own_band_inclusively(self, tmp_path):
+        rows = [{"snr": 20, "measurement_snr": lv, "rho": r}
+                for lv in (10.0, float("inf")) for r in RHOS]
+        band = {10.0: (0.7, 0.95), float("inf"): (0.55, 0.65)}
+        out = _in_band(pd.DataFrame(rows), band)
+        # the endpoints themselves must survive: averaging identical floats used to drop them
+        assert sorted(out[out["measurement_snr"] == 10.0]["rho"]) == [0.7, 0.8, 0.9, 0.95]
+        assert sorted(out[out["measurement_snr"] == float("inf")]["rho"]) == [0.55, 0.6, 0.65]
+
+    def test_no_artifacts_falls_back_to_the_scalar(self, tmp_path):
+        assert band_endpoints(tmp_path) == {}
+        rows = pd.DataFrame([{"snr": 20, "measurement_snr": 10.0, "rho": r} for r in RHOS])
+        assert _in_band(rows, {})["rho"].min() >= BAND_RHO

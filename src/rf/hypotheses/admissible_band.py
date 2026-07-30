@@ -3,7 +3,7 @@ import torch
 from dsp.state_evolution import calibration_snr
 from rf.hypotheses._artifacts import normalize_power, snr_strata
 from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, admissible_band as assemble_band
-from rf.signal_model import k_eff, rho_dt, statistical_dimension_l1
+from rf.signal_model import dither_sigma, frame_sparsity, k_eff, rho_dt, statistical_dimension_l1
 
 # Layer V Result 4: synthesize the band per SNR stratum from the measured sparsity and the stratum
 # noise level. rho_dt from the statistical dimension, rho_label from the SE label floor, rho_max
@@ -31,8 +31,8 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
     n = frames.shape[-1]
     frame = build_dictionary(dictionary, n, device)
     x = normalize_power(frames)
-    eps = k_eff(n) / frame.n_atoms
-    sigma = 0.0 if measurement_snr is None else 10.0 ** (-measurement_snr / 20.0)
+    eps = frame_sparsity(frame, n)
+    sigma = dither_sigma(measurement_snr)
     records = []
     for snr_db, rows in snr_strata(meta, x.shape[0]).items():
         dt = statistical_dimension_l1(k_eff(n) / n)

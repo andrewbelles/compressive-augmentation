@@ -6,10 +6,14 @@ from dsp.recovery import (
     _oamp_update,
     apply_A,
     apply_AH,
+    bg_mmse,
+    bg_mmse_divergence,
+    bg_mmse_step,
     denoise_step,
     complex_soft_threshold,
     lasso_fista,
     oamp,
+    oamp_bg_mmse,
     reconstruct,
     soft_threshold_divergence,
 )
@@ -49,6 +53,81 @@ class TestSoftThreshold:
         u = torch.exp(1j * torch.tensor([0.3, 1.1], device=device)) * 3.0
         out = complex_soft_threshold(u, 1.0)
         assert torch.allclose(out.angle(), u.angle(), atol=1e-5)
+
+
+EPS_BG = 0.05
+
+
+def _bg(device, shape, eps=EPS_BG, seed=3):
+    g = _gen(device, seed)
+    mask = (torch.rand(shape, generator=g, device=device) < eps).to(torch.complex64)
+    z = torch.randn(shape, dtype=torch.complex64, device=device, generator=g)
+    return mask * z * (1.0 / eps) ** 0.5
+
+
+class TestBernoulliGaussianMmse:
+    def test_keeps_every_atom_and_stays_monotone(self, device):
+        # the property soft-threshold lacks: no interval collapses to zero, so the map is invertible
+        mag = torch.linspace(1e-4, 6.0, 512, device=device)
+        out = bg_mmse(mag.to(torch.complex64), torch.tensor([0.4], device=device), EPS_BG).abs()
+        assert out.min().item() > 0.0
+        assert (out.diff() > 0).all()
+
+    def test_preserves_phase(self, device):
+        u = torch.exp(1j * torch.tensor([0.3, 1.1, -2.0], device=device)) * 2.5
+        out = bg_mmse(u, torch.tensor([0.5], device=device), EPS_BG)
+        assert torch.allclose(out.angle(), u.angle(), atol=1e-5)
+
+    def test_divergence_matches_finite_differences(self, device):
+        # pins the closed-form Onsager term: d eta / d r = (d/dx - i d/dy) / 2 at each coordinate
+        r = torch.randn(1, 64, dtype=torch.complex64, device=device, generator=_gen(device, 5))
+        tau = torch.tensor([[0.6]], device=device)
+        h = 1e-3
+        base = bg_mmse(r, tau, EPS_BG)
+        dx = (bg_mmse(r + h, tau, EPS_BG) - base) / h
+        dy = (bg_mmse(r + 1j * h, tau, EPS_BG) - base) / h
+        expect = (0.5 * (dx - 1j * dy)).real.mean(dim=-1, keepdim=True)
+        got = bg_mmse_divergence(r, tau, EPS_BG)
+        assert (got - expect).abs().max().item() < 5e-3
+
+    def test_beats_soft_threshold_under_its_own_prior(self, device):
+        # null: the matched denoiser is no better than a tuned threshold on Bernoulli-Gaussian draws
+        alpha = _bg(device, (1, 40000))
+        tau = 0.5
+        z = torch.randn(alpha.shape, dtype=torch.complex64, device=device, generator=_gen(device, 6))
+        r = alpha + tau * z
+        t = torch.full((1, 1), tau, device=device)
+        mmse = (bg_mmse(r, t, EPS_BG) - alpha).abs().pow(2).mean().item()
+        best = min((complex_soft_threshold(r, k * tau) - alpha).abs().pow(2).mean().item()
+                   for k in (0.5, 1.0, 1.5, 2.0, 2.5, 3.0))
+        assert mmse < best
+
+    def test_recovers_planted_sparse(self, device):
+        frame = gabor_frame(N, N, N // 2, device=device)
+        op = random_convolution(N, round(0.9 * N), _gen(device, 1), device=device)
+        x = synthesis(_planted(device, frame.n_atoms), frame)
+        eps = 6.0 / frame.n_atoms
+        got = reconstruct(oamp_bg_mmse(measure(x, op), op, frame, eps), frame)
+        assert _snr_db(x, got) > 20.0
+
+    def test_divergence_free_step_matches_the_helpers(self, device):
+        r = torch.randn(8, 128, dtype=torch.complex64, device=device, generator=_gen(device, 13))
+        tau = torch.full((8, 1), 0.7, device=device)
+        div = bg_mmse_divergence(r, tau, EPS_BG).clamp(0.0, 0.95)
+        expect = (bg_mmse(r, tau, EPS_BG) - div * r) / (1.0 - div)
+        got = bg_mmse_step(r, tau, EPS_BG)
+        assert ((got - expect).abs().max() / expect.abs().mean()).item() < 1e-5
+
+    def test_cpu_cuda_match(self, device):
+        if device.type != "cuda":
+            return
+        frame_c = gabor_frame(N, N, N // 2, device="cpu")
+        op_c = random_convolution(N, round(0.7 * N), _gen("cpu", 1), device="cpu")
+        y_c = measure(synthesis(_planted(torch.device("cpu"), frame_c.n_atoms), frame_c), op_c)
+        eps = 6.0 / frame_c.n_atoms
+        out_c = oamp_bg_mmse(y_c, op_c, frame_c, eps)
+        out_g = oamp_bg_mmse(y_c.cuda(), op_c.to("cuda"), frame_c.to("cuda"), eps)
+        assert torch.allclose(out_c, out_g.cpu(), atol=1e-3)
 
 
 class TestRecovery:

@@ -3,12 +3,14 @@ import torch
 from dsp.frames import gabor_frame, synthesis
 from dsp.operators import random_convolution
 from dsp.recovery import sparse_code
+from dsp.state_evolution import optimal_kappa
+from rf.augment import compressive_view, dither, draw_view
+from rf.signal_model import build_dictionary, dither_sigma, frame_sparsity, k_eff
 from rf.hypotheses._matched import (
     awgn_view,
     backprojection_view,
     cs_view,
     distortion,
-    draw_noise,
     dropout_view,
 )
 
@@ -61,8 +63,8 @@ class TestMatching:
         x = _frames(device)
         frame = gabor_frame(N, 32, 8, device=device)
         op = random_convolution(N, round(0.7 * N), _gen(device, 4), device=device)
-        clean = cs_view(x, op, frame, 1.0, draw_noise(x, op, None, _gen(device, 5)))
-        noisy = cs_view(x, op, frame, 1.0, draw_noise(x, op, 10.0, _gen(device, 5)))
+        clean = cs_view(x, op, frame, 1.0, dither(x, op, None, _gen(device, 5)))
+        noisy = cs_view(x, op, frame, 1.0, dither(x, op, 10.0, _gen(device, 5)))
         assert distortion(x, noisy).mean() > distortion(x, clean).mean()
 
     def test_shared_noise_isolates_the_nuisance(self, device):
@@ -70,9 +72,50 @@ class TestMatching:
         x = _frames(device)
         frame = gabor_frame(N, 32, 8, device=device)
         op = random_convolution(N, round(0.7 * N), _gen(device, 4), device=device)
-        w = draw_noise(x, op, 10.0, _gen(device, 5))
+        w = dither(x, op, 10.0, _gen(device, 5))
         shared = distortion(cs_view(x, op, frame, 1.0, w), cs_view(x, op, frame, 1.0, w)).mean()
         assert shared.item() < 1e-6
+
+
+class TestDeployedOperator:
+    def test_the_arm_is_the_operator_bit_for_bit(self, device):
+        # the gate scores cs_view, so the encoder must consume the identical map, not a near copy
+        x = _frames(device)
+        frame = gabor_frame(N, 32, 8, device=device)
+        op = random_convolution(N, round(0.7 * N), _gen(device, 4), device=device)
+        w = dither(x, op, 10.0, _gen(device, 5))
+        assert torch.equal(cs_view(x, op, frame, 1.0, w), compressive_view(x, op, frame, 1.0, w))
+
+    def test_zero_dither_barely_augments_in_band(self, device):
+        # why the dither carries no default: on a compressible signal above the DT threshold the
+        # sigma = 0 round trip returns x, so w is the whole source of view diversity
+        frame = gabor_frame(N, 32, 8, device=device)
+        g = _gen(device, 8)
+        alpha = torch.zeros(16, frame.n_atoms, dtype=torch.complex64, device=device)
+        idx = torch.randperm(frame.n_atoms, generator=g, device=device)[:20]
+        alpha[:, idx] = torch.randn(16, 20, dtype=torch.complex64, device=device, generator=g)
+        x = synthesis(alpha, frame)
+        op = random_convolution(N, round(0.8 * N), _gen(device, 4), device=device)
+        quiet = distortion(x, cs_view(x, op, frame, 1.0, dither(x, op, None, _gen(device, 5))))
+        loud = distortion(x, cs_view(x, op, frame, 1.0, dither(x, op, 10.0, _gen(device, 5))))
+        assert loud.mean().item() > 20.0 * quiet.mean().item()
+
+    def test_draw_view_is_reproducible_and_distorts(self, device):
+        x = _frames(device)
+        a = draw_view(x, 0.7, 10.0, _gen(device, 7), dictionary="gabor_symbol")
+        b = draw_view(x, 0.7, 10.0, _gen(device, 7), dictionary="gabor_symbol")
+        assert torch.equal(a, b)
+        assert 1e-4 < distortion(x, a).mean().item() < 1.0
+
+    def test_entry_point_derives_the_same_threshold_as_the_driver(self, device):
+        # draw_view and the drivers both feed optimal_kappa; a divergence here would make the gate
+        # score a threshold the encoder never uses
+        frame = build_dictionary("gabor_symbol", N, device)
+        for snr in (None, 10.0, 30.0):
+            assert dither_sigma(snr) == (0.0 if snr is None else 10.0 ** (-snr / 20.0))
+            assert optimal_kappa(0.7, dither_sigma(snr), frame_sparsity(frame, N),
+                                 frame.gamma, N) > 0.0
+        assert frame_sparsity(frame, N) == k_eff(N) / frame.n_atoms
 
 
 class TestArtifactNaming:

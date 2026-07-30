@@ -4,7 +4,7 @@ from dsp.operators import measure, measurement_noise, random_convolution
 from dsp.recovery import oamp, reconstruct
 from dsp.state_evolution import optimal_kappa
 from rf.hypotheses._artifacts import normalize_power, snr_strata
-from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, k_eff
+from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, dither_sigma, frame_sparsity
 
 # Layer IV Result 2 falsified through the threshold rather than through an SNR value: SE must
 # predict which threshold is best, not merely a number to compare against. Accept: the predicted
@@ -24,8 +24,8 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
     n = frames.shape[-1]
     frame = build_dictionary(dictionary, n, device)
     x = normalize_power(frames)
-    eps = k_eff(n) / frame.n_atoms
-    sigma = 0.0 if measurement_snr is None else 10.0 ** (-measurement_snr / 20.0)
+    eps = frame_sparsity(frame, n)
+    sigma = dither_sigma(measurement_snr)
     records = []
     for snr_db, rows in snr_strata(meta, x.shape[0]).items():
         sel = x[torch.tensor(rows, device=device)]

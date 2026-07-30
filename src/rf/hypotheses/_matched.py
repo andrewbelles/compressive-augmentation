@@ -1,8 +1,9 @@
 import torch
 
 from dsp.frames import synthesis
-from dsp.operators import backproject, measure, measurement_noise, random_convolution
-from dsp.recovery import debias, oamp, reconstruct
+from dsp.operators import backproject, measure, random_convolution
+from dsp.recovery import oamp, oamp_bg_mmse, reconstruct
+from rf.augment import compressive_view
 
 # augmentation arms produced at a matched signal-domain distortion, so comparisons are made at equal
 # corruption rather than at equal rho; load-bearing for both GO gates, hence tested on its own
@@ -16,21 +17,25 @@ def distortion(x: torch.Tensor, xt: torch.Tensor) -> torch.Tensor:
     return (xt - x).abs().pow(2).sum(-1) / x.abs().pow(2).sum(-1).clamp_min(EPS)
 
 
-def draw_noise(x, op, measurement_snr, gen):
-    """Measurement noise for one cell; share it across views whose difference must isolate x."""
-    return measurement_noise(measure(x, op), measurement_snr, op, gen)
+def cs_view(x, op, frame, kappa, noise=None):
+    """The deployed operator as an arm; it defines the target distortion the others are matched to."""
+    return compressive_view(x, op, frame, kappa, noise)
 
 
-def cs_view(x, op, frame, kappa, noise=None, debiased=True):
-    """Full CS round trip, the reference arm that defines the target distortion."""
-    y = measure(x, op)
-    y = y if noise is None else y + noise
-    alpha = oamp(y, op, frame, kappa=kappa)
+def shrunk_view(x, op, frame, kappa, noise=None):
+    """The same round trip without the refit, so the shrinkage bias can be scored on its own."""
     # soft thresholding shrinks amplitude non-uniformly, and the confusable classes are separated
     # by amplitude structure, so the shrunk estimate discards the label the view is meant to keep
-    if debiased:
-        alpha = debias(alpha, y, op, frame)
-    return reconstruct(alpha, frame)
+    y = measure(x, op)
+    y = y if noise is None else y + noise
+    return reconstruct(oamp(y, op, frame, kappa=kappa), frame)
+
+
+def cs_mmse_view(x, op, frame, eps, noise=None):
+    """CS round trip under the matched denoiser: no hard support selection, hence no debias step."""
+    y = measure(x, op)
+    y = y if noise is None else y + noise
+    return reconstruct(oamp_bg_mmse(y, op, frame, eps), frame)
 
 
 def awgn_view(x, target, gen):

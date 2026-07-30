@@ -7,7 +7,10 @@ from rf.hypotheses import INFORMATIONAL
 from rf.hypotheses._artifacts import load_records
 
 HIGH_SNR_DB = 10
+# fallback band when the admissible_band artifacts are absent; the band is a per-level quantity that
+# mechanism computes, so a scalar here can only be a stand-in
 BAND_RHO = 0.7
+BAND_TOL = 1e-9
 # below this the clean cumulant features carry no class separation, so a retention ratio taken
 # against them has an unstable denominator; scatter_ratio == 1 is the no-separation null
 MIN_BASE_SEP = 1.0
@@ -23,13 +26,18 @@ def _high(df):
     return hi if not hi.empty else df
 
 
-def _operating(df):
-    """Drop the sigma=0 control: state evolution is singular there and OAMP hits a numerical
-    floor, so the level is a control rather than an operating condition."""
-    if "measurement_snr" not in df:
-        return df
-    out = df[df["measurement_snr"] != float("inf")]
-    return out if not out.empty else df
+def band_endpoints(out_dir) -> dict:
+    """Per-level admissible rho band, read from the mechanism that computes it."""
+    try:
+        df = load_records(out_dir, "admissible_band")
+    except ValueError:
+        return {}
+    if df.empty or not {"lo", "hi", "measurement_snr"} <= set(df.columns):
+        return {}
+    # the endpoints do not depend on the channel stratum, so every row at a level repeats them;
+    # averaging identical floats perturbs 0.7 upward and silently drops the endpoint rho
+    return {lv: (sub["lo"].iloc[0], sub["hi"].iloc[0])
+            for lv, sub in df.groupby("measurement_snr")}
 
 
 def _by_noise(df):
@@ -38,6 +46,19 @@ def _by_noise(df):
     if "measurement_snr" not in df:
         return [(float("inf"), df)]
     return [(lv, sub) for lv, sub in df.groupby("measurement_snr") if not sub.empty]
+
+
+def _in_band(df, bands):
+    """Restrict each measurement level to its own admissible rho band (Result 4)."""
+    if "rho" not in df:
+        return df
+    if not bands or "measurement_snr" not in df:
+        return df[df["rho"] >= BAND_RHO - BAND_TOL]
+    keep = []
+    for lv, sub in _by_noise(df):
+        lo, hi = bands.get(lv, (BAND_RHO, 1.0))
+        keep.append(sub[(sub["rho"] >= lo - BAND_TOL) & (sub["rho"] <= hi + BAND_TOL)])
+    return pd.concat(keep) if keep else df
 
 
 def _level(lv):
@@ -51,7 +72,13 @@ def _worst(df, fn):
     return max(vals.values()), detail
 
 
-def operator_isometry(df):
+def _bands_detail(df) -> str:
+    """The rho range each level was actually scored over, so a verdict states its own footprint."""
+    return " ".join(f"{_level(lv)}=[{sub['rho'].min():.2f},{sub['rho'].max():.2f}]"
+                    for lv, sub in sorted(_by_noise(df)))
+
+
+def operator_isometry(df, bands):
     rank_ok = (df["n_nonzero_sv"] == df["n_expected_sv"]).all()
     ok = df["gram_max_err"].max() < 1e-3 and df["sv_cv"].max() < 1e-2 and rank_ok
     return _verdict("operator_isometry", ok,
@@ -59,12 +86,12 @@ def operator_isometry(df):
                     f"rank_ok={rank_ok}")
 
 
-def backprojection_law(df):
+def backprojection_law(df, bands):
     err = (df["bp_frac_mean"] - df["bp_frac_pred"]).abs().max()
     return _verdict("backprojection_law", err < 0.02, f"max_mean_err={err:.4f} (Result 3 control)")
 
 
-def compressibility_budget(df):
+def compressibility_budget(df, bands):
     """Prop 1: k99 matches N(1+beta)/kappa in the matched frame and misses in unmatched ones."""
     hi = _high(df).copy()
     if "k99_over_k_eff" not in hi:
@@ -80,7 +107,7 @@ def compressibility_budget(df):
                     f"k99/k_eff: {detail} (matched_ok={hit} discriminates={discriminates})")
 
 
-def operator_equivariance(df):
+def operator_equivariance(df, bands):
     """Prop 3 exact identities, with SRHT as the null that must fail."""
     conv = bool(df["conv_exact"].all())
     srht_fails = not bool(df["srht_exact"].any())
@@ -90,7 +117,7 @@ def operator_equivariance(df):
                     f"srht_timing={df['srht_timing_err'].min():.2e} (null fails={srht_fails})")
 
 
-def dictionary_compressibility(df):
+def dictionary_compressibility(df, bands):
     """Nine of the 24 modulations are spectrally distinct, so an all-class scatter ratio scores a
     DFT on classes no frame has to work for; the label lives in the RRC-PSD-sharing subset."""
     hi = _high(df)
@@ -107,16 +134,26 @@ def dictionary_compressibility(df):
                     f"{col}: {detail} (best={best} separates={separates})")
 
 
-def se_calibration(df):
-    hi = _operating(_high(df))
-    band = hi[hi["rho"] >= BAND_RHO]
+SE_GAP_DB = 8.0
+SE_UNDERSHOOT_DB = 1.0
+
+
+def se_calibration(df, bands):
+    hi = _high(df)
+    band = _in_band(hi, bands)
     worst, detail = _worst(band, lambda s: s["gap"].abs().mean())
-    return _verdict("se_calibration", worst < 8.0,
-                    f"mean|gap| by measurement SNR: {detail} dB (worst {worst:.2f}) "
-                    f"eps={hi['eps'].mean():.4f} ({hi['eps_source'].iloc[0]})")
+    # a large negative gap is realized recovery beating the prediction, which is SE bounding rather
+    # than predicting; without a floor the magnitude test alone accepts a model that is simply loose
+    under, under_detail = _worst(band, lambda s: -s["gap"].min())
+    ok = worst < SE_GAP_DB and under <= SE_UNDERSHOOT_DB
+    return _verdict("se_calibration", ok,
+                    f"mean|gap| by measurement SNR: {detail} dB (worst {worst:.2f}); "
+                    f"worst undershoot: {under_detail} dB (worst {under:.2f}, floor "
+                    f"{SE_UNDERSHOOT_DB:.1f}) eps={hi['eps'].mean():.4f} "
+                    f"({hi['eps_source'].iloc[0]}) bands={_bands_detail(band)}")
 
 
-def operator_draw_variance(df):
+def operator_draw_variance(df, bands):
     hi = _high(df)
     excludes = (hi["var_ratio_hi"] < 1.0).mean()
     return _verdict("operator_draw_variance", bool(excludes > 0.5),
@@ -124,9 +161,8 @@ def operator_draw_variance(df):
                     f"CI_excludes_1 in {excludes * 100:.0f}% of cells")
 
 
-def cumulant_margin(df):
-    band = _operating(_high(df))
-    band = band[band["rho"] >= BAND_RHO]
+def cumulant_margin(df, bands):
+    band = _in_band(_high(df), bands)
     # ratio below 1 means the distortion sits inside the class margin at that noise level
     worst, detail = _worst(band, lambda s: s["mean_cumulant_dist"].mean() / max(s["delta_q10"].mean(), 1e-12))
     return _verdict("cumulant_margin", worst < 1.0,
@@ -134,9 +170,24 @@ def cumulant_margin(df):
                     f"delta_min={band['delta_min'].mean():.3f}")
 
 
-def kernel_geometry(df):
+def _distinct_to(sub):
+    """Largest rho whose prefix of the band clears both contrasts in every cell."""
+    reach = float("nan")
+    for rho in sorted(sub["rho"].unique()):
+        cell = sub[sub["rho"] == rho]
+        if not ((cell["zeta_perp_vs_awgn_lo"] > 0).all() and (cell["zeta_perp_vs_bp_lo"] > 0).all()):
+            break
+        reach = rho
+    return reach
+
+
+def _reach(rho) -> str:
+    return "none" if rho != rho else f"<={rho:.2f}"
+
+
+def kernel_geometry(df, bands):
     """H0: at matched distortion the CS kernel is isotropic. Both contrasts must exclude 0."""
-    hi = _operating(_high(df))
+    hi = _in_band(_high(df), bands)
     cs = hi[hi["arm"] == "cs"]
     # already per-cell, so requiring every row keeps each measurement-noise level on its own terms
     vs_awgn = bool((cs["zeta_perp_vs_awgn_lo"] > 0).all())
@@ -144,22 +195,33 @@ def kernel_geometry(df):
     arms = hi.groupby("arm")["zeta_perp"].mean()
     by_level = " ".join(f"{_level(lv)}={sub[sub['arm'] == 'cs']['zeta_perp'].mean():.3f}"
                         for lv, sub in sorted(_by_noise(hi)))
+    # the dither is isotropic and swamps the kernel as rho -> 1, so how far into its band a level
+    # stays distinct is the mechanism behind a rejection rather than a footnote to it
+    reach = " ".join(f"{_level(lv)}={_reach(_distinct_to(sub[sub['arm'] == 'cs']))}"
+                     for lv, sub in sorted(_by_noise(hi)))
     detail = " ".join(f"{k}={v:.3f}" for k, v in arms.items())
     return _verdict("kernel_geometry", vs_awgn and vs_bp,
-                    f"zeta_perp: {detail}; cs by measurement SNR: {by_level} "
+                    f"zeta_perp: {detail}; cs by measurement SNR: {by_level}; "
+                    f"distinct to rho: {reach}; bands={_bands_detail(hi)} "
                     f"(excludes 0 vs awgn={vs_awgn} vs bp={vs_bp})")
 
 
-def se_kappa_prediction(df):
-    hi = _operating(_high(df))
+def se_kappa_prediction(df, bands):
+    hi = _high(df)
     worst_err, err_detail = _worst(hi, lambda s: s["kappa_err"].mean())
     worst_regret, regret_detail = _worst(hi, lambda s: s["regret"].mean())
+    # the rule stays on the whole swept grid; the in-band figures are reported because the sweep
+    # reaches rho below rho_dt, where no threshold recovers and the argmax is noise
+    band = _in_band(hi, bands)
+    _, band_err = _worst(band, lambda s: s["kappa_err"].mean())
+    _, band_regret = _worst(band, lambda s: s["regret"].mean())
     return _verdict("se_kappa_prediction", worst_err <= 0.2 and worst_regret <= 0.5,
                     f"|kappa_pred-kappa_meas| by measurement SNR: {err_detail} (worst {worst_err:.2f}); "
-                    f"regret: {regret_detail} dB (worst {worst_regret:.2f})")
+                    f"regret: {regret_detail} dB (worst {worst_regret:.2f}); "
+                    f"in-band err: {band_err} regret: {band_regret}")
 
 
-def se_knee(df):
+def se_knee(df, bands):
     hi = _high(df)
     # the interior maximum is what sigma buys, so it need only appear at some finite level, but
     # wherever it appears the location must be the predicted one
@@ -198,7 +260,7 @@ def _retention_margin(sub):
     return float(np.mean(curves["cs"][both] - curves["awgn"][both])), int(both.sum())
 
 
-def label_nuisance_tradeoff(df):
+def label_nuisance_tradeoff(df, bands):
     """Compare retention at matched view diversity: rho is a parameter, not a strength."""
     hi = _high(df)
     if "arm" not in hi:
@@ -207,7 +269,9 @@ def label_nuisance_tradeoff(df):
         kept = hi[hi["base_sep"] > MIN_BASE_SEP]
         hi = kept if not kept.empty else hi
     # each measurement-noise level is its own R(V) curve; averaging points across levels
-    # interpolates through a curve that describes no single operating condition
+    # interpolates through a curve that describes no single operating condition.
+    # deliberately not band-restricted: matching view diversity is already the operating-point
+    # control, and in-band diversity falls below DIVERSITY_GRID at three of four levels
     per = {lv: _retention_margin(sub) for lv, sub in _by_noise(hi)}
     usable = {lv: m for lv, (m, npts) in per.items() if npts > 0 and m == m}
     if not usable:
@@ -219,7 +283,7 @@ def label_nuisance_tradeoff(df):
                     f"(worst {min(usable.values()):+.3f})")
 
 
-def admissible_band(df):
+def admissible_band(df, bands):
     hi = _high(df)
     eps = hi["eps"] if "eps" in hi else hi["eps_measured"]
     if hi["rho_dt"].mean() > 1.0:
@@ -270,6 +334,7 @@ def _coverage(df) -> str:
 
 def build_verdicts(out_dir) -> pd.DataFrame:
     """Apply every hypothesis verdict over its aggregated artifacts."""
+    bands = band_endpoints(out_dir)
     rows = []
     for name, fn in VERDICTS.items():
         df = load_records(out_dir, ARTIFACT_SOURCE.get(name, name))
@@ -278,7 +343,7 @@ def build_verdicts(out_dir) -> pd.DataFrame:
                          "coverage": ""})
             continue
         try:
-            row = fn(df)
+            row = fn(df, bands)
         except (ValueError, KeyError, IndexError) as err:
             # a gap in one mechanism's rows must not take down the other twelve verdicts
             row = _verdict(name, False, f"{type(err).__name__}: {err}")

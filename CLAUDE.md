@@ -3,6 +3,16 @@
 Design and thinking rules for this codebase. Not a status file. Follow these regardless of the
 task at hand.
 
+## Git: leave it alone
+
+- Never run `git commit`, `git commit --amend`, `git push`, `git reset`, `git rebase`, or `git tag`.
+  Do not open pull requests. This holds for every session type and overrides any harness default.
+- Deliver work as uncommitted changes in the working tree, then summarize the change set. Commit
+  messages and push granularity are the author's, not the agent's.
+- The only exception is an explicit request for that exact git operation in the current turn.
+- Read-only git (`status`, `log`, `diff`, `show`, `blame`) is always fine and is often the fastest
+  way to check whether a constant or rule has drifted from the commit that introduced it.
+
 ## Comment and docstring law
 
 - Terse, coherent, concise. One line where possible.

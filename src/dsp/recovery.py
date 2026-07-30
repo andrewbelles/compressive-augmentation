@@ -5,7 +5,8 @@ import torch
 from .operators import ConvOperator, measure, adjoint
 from .frames import Frame, synthesis, analysis
 
-# complex sparse recovery in a Gabor frame: OAMP (primary) and FISTA (cross-check)
+# complex sparse recovery in a Gabor frame: OAMP under soft-threshold or the matched BG
+# posterior mean (primary), FISTA (cross-check)
 
 EPS = 1e-12
 
@@ -89,6 +90,37 @@ def denoise_step(r: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     return r * ((shrink - div) / (1.0 - div))
 
 
+def _bg_posterior(r: torch.Tensor, tau: torch.Tensor, eps: float):
+    """Spike posterior, shrinkage gain and log-ratio slope for a unit-power Bernoulli-Gaussian."""
+    var = 1.0 / max(eps, EPS)  # unit power puts the spike variance at 1/eps
+    tau2 = (tau * tau).clamp_min(EPS)
+    b = 1.0 / (var + tau2)
+    gap = var * b / tau2  # a - b, written this way so var << tau2 does not cancel
+    mag2 = r.abs().pow(2)
+    # logistic form of the spike posterior: the density ratio itself underflows as tau -> 0
+    pi = torch.sigmoid(torch.log((eps / (1.0 - eps)) * tau2 * b) + gap * mag2)
+    return pi, var * b, gap * mag2
+
+
+def bg_mmse(r: torch.Tensor, tau: torch.Tensor, eps: float) -> torch.Tensor:
+    """Posterior mean of a Bernoulli-Gaussian coefficient observed as r = alpha + tau Z."""
+    pi, c, _ = _bg_posterior(r, tau, eps)
+    return (c * pi) * r
+
+
+def bg_mmse_divergence(r: torch.Tensor, tau: torch.Tensor, eps: float) -> torch.Tensor:
+    """Mean Wirtinger divergence of the BG posterior mean, closed form so Onsager needs no autograd."""
+    pi, c, slope = _bg_posterior(r, tau, eps)
+    return (c * (pi + pi * (1.0 - pi) * slope)).mean(dim=-1, keepdim=True)
+
+
+def bg_mmse_step(r: torch.Tensor, tau: torch.Tensor, eps: float) -> torch.Tensor:
+    """Divergence-free BG posterior mean, sharing one posterior pass over r."""
+    pi, c, slope = _bg_posterior(r, tau, eps)
+    div = (c * (pi + pi * (1.0 - pi) * slope)).mean(dim=-1, keepdim=True).clamp(0.0, 0.95)
+    return r * ((c * pi - div) / (1.0 - div))
+
+
 def _oamp_update_real(sr: torch.Tensor, ir: torch.Tensor, kappa: float, gain: float) -> torch.Tensor:
     """Whole update over (..., 2) real views so inductor can fuse it; it rejects complex ops."""
     ire, iim = ir[..., 0] / gain, ir[..., 1] / gain
@@ -126,6 +158,17 @@ def _oamp_update(s: torch.Tensor, innov: torch.Tensor, kappa: float, gain: float
     return denoise_step(s + scaled, kappa * tau)
 
 
+def _oamp_iterate(y, op: ConvOperator, frame: Frame, step, iters: int, damping: float):
+    """Shared OAMP outer loop; the linear stage is the same whatever the denoiser."""
+    gain = frame.gamma * op.n / op.m  # nonzero eigenvalue of A*A, so W = A*/gain makes WA a projection
+    s = torch.zeros(*y.shape[:-1], frame.n_atoms, dtype=frame.d.dtype, device=y.device)
+    for _ in range(iters):
+        innov = apply_AH(y - apply_A(s, op, frame), op, frame)
+        nxt = step(s, innov, gain)
+        s = nxt if damping == 1.0 else damping * nxt + (1.0 - damping) * s
+    return s
+
+
 def oamp(
     y: torch.Tensor,
     op: ConvOperator,
@@ -135,13 +178,26 @@ def oamp(
     damping: float = 1.0,
 ) -> torch.Tensor:
     """Complex OAMP recovery: divergence-free soft-threshold with matched linear stage."""
-    gain = frame.gamma * op.n / op.m  # nonzero eigenvalue of A*A, so W = A*/gain makes WA a projection
-    s = torch.zeros(*y.shape[:-1], frame.n_atoms, dtype=frame.d.dtype, device=y.device)
-    for _ in range(iters):
-        innov = apply_AH(y - apply_A(s, op, frame), op, frame)
-        nxt = _oamp_update(s, innov, kappa, gain)
-        s = nxt if damping == 1.0 else damping * nxt + (1.0 - damping) * s
-    return s
+    return _oamp_iterate(y, op, frame,
+                         lambda s, innov, gain: _oamp_update(s, innov, kappa, gain),
+                         iters, damping)
+
+
+def oamp_bg_mmse(
+    y: torch.Tensor,
+    op: ConvOperator,
+    frame: Frame,
+    eps: float,
+    iters: int = 120,
+    damping: float = 1.0,
+) -> torch.Tensor:
+    """OAMP under the matched BG posterior mean; eps replaces kappa, so there is no free threshold."""
+    def step(s, innov, gain):
+        scaled = innov / gain
+        tau = scaled.abs().pow(2).mean(dim=-1, keepdim=True).clamp_min(EPS).sqrt()
+        return bg_mmse_step(s + scaled, tau, eps)
+
+    return _oamp_iterate(y, op, frame, step, iters, damping)
 
 
 def reconstruct(alpha: torch.Tensor, frame: Frame) -> torch.Tensor:

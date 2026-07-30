@@ -5,7 +5,7 @@ from dsp.operators import measure, measurement_noise, random_convolution
 from dsp.recovery import oamp, reconstruct
 from dsp.state_evolution import calibration_snr, optimal_kappa, se_fixed_point
 from rf.hypotheses._artifacts import mods_at, normalize_power, snr_strata
-from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, k_eff
+from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, dither_sigma, frame_sparsity
 
 # Layer II says a compressible prior turns the Donoho-Tanner cliff into a knee, the rho where
 # dSNR/drho peaks. With sigma = 0 recovery runs away as rho -> 1 and the maximum sits at the grid
@@ -50,8 +50,8 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
     n = frames.shape[-1]
     frame = build_dictionary(dictionary, n, device)
     x = normalize_power(frames)
-    eps = k_eff(n) / frame.n_atoms
-    sigma = 0.0 if measurement_snr is None else 10.0 ** (-measurement_snr / 20.0)
+    eps = frame_sparsity(frame, n)
+    sigma = dither_sigma(measurement_snr)
     rhos = sorted(ratios)
     records = []
     for snr_db, rows in snr_strata(meta, x.shape[0]).items():
