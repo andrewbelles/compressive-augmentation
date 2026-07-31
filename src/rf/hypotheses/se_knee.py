@@ -1,9 +1,10 @@
 import torch
 
+from common.statistics import class_margins
 from dsp.cumulants import cumulant_distance, cumulant_features
 from dsp.operators import measure, measurement_noise, random_convolution
 from dsp.recovery import oamp, reconstruct
-from dsp.state_evolution import calibration_snr, optimal_kappa, se_fixed_point
+from dsp.state_evolution import calibration_snr, kappa_pinned, optimal_kappa, se_fixed_point
 from rf.hypotheses._artifacts import mods_at, normalize_power, snr_strata
 from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, dither_sigma, frame_sparsity
 
@@ -30,21 +31,6 @@ def _knee(rhos, values):
     return mids[j], slopes[j], 0 < j < len(slopes) - 1
 
 
-def _margins(feats, mods, device):
-    """Minimum and 10th-percentile pairwise distance between class means."""
-    keys = sorted(set(mods))
-    if len(keys) < 2:
-        return float("nan"), float("nan")
-    index: dict[str, list[int]] = {k: [] for k in keys}
-    for i, mod in enumerate(mods):
-        index[mod].append(i)
-    stacked = torch.stack([feats[torch.tensor(index[k], device=device)].mean(0) for k in keys])
-    dist = torch.cdist(stacked, stacked)
-    iu = torch.triu_indices(len(keys), len(keys), offset=1, device=device)
-    pairs = dist[iu[0], iu[1]]
-    return pairs.min().item(), pairs.quantile(0.1).item()
-
-
 def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
         measurement_snr=None) -> list[dict]:
     n = frames.shape[-1]
@@ -57,7 +43,7 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
     for snr_db, rows in snr_strata(meta, x.shape[0]).items():
         sel = x[torch.tensor(rows, device=device)]
         mods = mods_at(meta, rows)
-        delta_min, delta_q10 = _margins(cumulant_features(sel), mods, device)
+        delta_min, delta_q10 = class_margins(cumulant_features(sel), mods)
         realized, predicted, rows_out = [], [], []
         for rho in rhos:
             m = max(1, round(rho * n))
@@ -82,6 +68,7 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
                 "eps": eps,
                 "eps_source": "prop1",
                 "kappa": kappa,
+                "kappa_pinned": kappa_pinned(rho, sigma, eps, frame.gamma, n),
                 "realized_snr": r,
                 "se_snr": p,
                 "se_mse": se_fixed_point(rho, sigma, eps, frame.gamma, n, kappa=kappa)["mse"],

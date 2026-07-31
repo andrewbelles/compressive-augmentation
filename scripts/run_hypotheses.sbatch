@@ -56,8 +56,11 @@ test -f "$MANIFEST" || { echo "FATAL: missing $MANIFEST (run acquire_rml2018.sba
 echo "START hypotheses seed=$SEED msnr=${MSNR:-none} node=$(hostname) $(date -Iseconds)"
 
 SNRS=-10,0,6,10,14,18,22,26,30
-COARSE=0.3,0.4,0.5,0.6,0.7,0.8,0.9
-FINE=0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95
+COARSE=0.02,0.03,0.05,0.08,0.12,0.17,0.25,0.3,0.4,0.5,0.6,0.7,0.8,0.9
+FINE=0.02,0.03,0.05,0.08,0.12,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95
+# the class-diameter sweep is the log-spaced grid: its accept lives below the sparsity ratio, where
+# the linear points carry no resolution, and its cost is trimmed here without touching the knee
+DIAMETER=0.02,0.03,0.05,0.08,0.12,0.17,0.25,0.3,0.4,0.5,0.6,0.7,0.8,0.9
 
 run () {  # comma-separated mechanisms, ratios, extra flags
     echo "--- $1 seed=$SEED msnr=${MSNR:-none} ${3:-} ---"
@@ -76,5 +79,6 @@ fi
 # rho is the structural floor and the measurement SNR is the ceiling, so the knee needs both swept
 run se_kappa_prediction,admissible_band "$COARSE" "$NOISE_FLAG"
 run se_knee,kernel_geometry "$FINE" "$NOISE_FLAG"
+run class_diameter "$DIAMETER" "$NOISE_FLAG"
 
 echo "DONE hypotheses seed=$SEED $(date -Iseconds)"

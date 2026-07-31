@@ -1,3 +1,4 @@
+import math
 from functools import lru_cache
 
 import torch
@@ -55,20 +56,39 @@ def se_fixed_point(
     return {"tau": tau2 ** 0.5, "mse": v2, "delta": delta, "rho": rho}
 
 
-KAPPA_GRID = tuple(round(0.3 + 0.1 * i, 1) for i in range(16))
+KAPPA_GRID = tuple(round(0.3 + 0.1 * i, 1) for i in range(28))
 KAPPA_MC = 10000
 
 
 @lru_cache(maxsize=4096)
-def optimal_kappa(rho: float, sigma: float, eps: float, gamma: float, n: int) -> float:
-    """Threshold minimizing the SE fixed-point MSE; a prediction, never fitted to realized data."""
+def _kappa_search(rho: float, sigma: float, eps: float, gamma: float, n: int) -> tuple[float, bool]:
+    """Grid argmin of the SE fixed-point MSE, and whether it landed on a grid endpoint."""
     # rho comes from a discrete grid, so caching on the argument tuple collapses the repeats across
     # strata; the reduced Monte-Carlo budget is enough for an argmin over a 0.1-spaced grid
-    scored = [
-        (se_fixed_point(rho, sigma, eps, gamma, n, kappa=k, mc=KAPPA_MC)["mse"], k)
-        for k in KAPPA_GRID
-    ]
-    return min(scored)[1]
+    scored = [(m, k) for m, k in
+              ((se_fixed_point(rho, sigma, eps, gamma, n, kappa=k, mc=KAPPA_MC)["mse"], k)
+               for k in KAPPA_GRID)
+              if math.isfinite(m)]
+    # far below the DT threshold the recursion diverges for small kappa and returns nan, and nan
+    # wins a tuple comparison, so a divergent threshold would be reported as the argmin
+    if not scored:
+        return KAPPA_GRID[0], True
+    kappa = min(scored)[1]
+    pinned = kappa in (KAPPA_GRID[0], KAPPA_GRID[-1])
+    if pinned:
+        print(f"kappa pinned at grid endpoint {kappa:g} "
+              f"(rho={rho:g} sigma={sigma:g} eps={eps:.4f} n={n})")
+    return kappa, pinned
+
+
+def optimal_kappa(rho: float, sigma: float, eps: float, gamma: float, n: int) -> float:
+    """Threshold minimizing the SE fixed-point MSE; a prediction, never fitted to realized data."""
+    return _kappa_search(rho, sigma, eps, gamma, n)[0]
+
+
+def kappa_pinned(rho: float, sigma: float, eps: float, gamma: float, n: int) -> bool:
+    """Whether the argmin sits on a KAPPA_GRID endpoint, making the threshold a grid artifact."""
+    return _kappa_search(rho, sigma, eps, gamma, n)[1]
 
 
 def calibration_snr(rho: float, sigma: float, eps: float, gamma: int, n: int, **kw) -> float:

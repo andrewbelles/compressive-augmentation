@@ -17,6 +17,11 @@ def distortion(x: torch.Tensor, xt: torch.Tensor) -> torch.Tensor:
     return (xt - x).abs().pow(2).sum(-1) / x.abs().pow(2).sum(-1).clamp_min(EPS)
 
 
+def retained_energy(x: torch.Tensor, xt: torch.Tensor) -> torch.Tensor:
+    """Per-frame view energy relative to the source; near zero means the solver returned nothing."""
+    return xt.abs().pow(2).sum(-1) / x.abs().pow(2).sum(-1).clamp_min(EPS)
+
+
 def cs_view(x, op, frame, kappa, noise=None):
     """The deployed operator as an arm; it defines the target distortion the others are matched to."""
     return compressive_view(x, op, frame, kappa, noise)

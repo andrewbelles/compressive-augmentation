@@ -29,6 +29,33 @@ def _meta(b):
             "snr": [10 if i < b // 2 else 20 for i in range(b)]}
 
 
+PLANTED_B = 32
+PLANTED_SHARE = 0.7
+
+
+def _planted_classes(device, seed=3):
+    # a shared sparse core per class plus an incompressible per-frame remainder, so the direction
+    # separating two frames of one class is exactly the part the sparse model cannot represent
+    frame = gabor_frame(N, 32, 8, device=device)
+    g = _gen(device, seed)
+    mods = _planted_meta()["mod"]
+    cores = {}
+    for mod in sorted(set(mods)):
+        a = torch.zeros(frame.n_atoms, dtype=torch.complex64, device=device)
+        idx = torch.randperm(frame.n_atoms, generator=g, device=device)[:20]
+        a[idx] = torch.randn(20, dtype=torch.complex64, device=device, generator=g)
+        cores[mod] = a
+    core = synthesis(torch.stack([cores[m] for m in mods]), frame)
+    rest = torch.randn(PLANTED_B, N, dtype=torch.complex64, device=device, generator=g)
+    unit = lambda t: t / t.abs().pow(2).mean(-1, keepdim=True).sqrt()
+    return PLANTED_SHARE * unit(core) + (1.0 - PLANTED_SHARE) * unit(rest)
+
+
+def _planted_meta():
+    return {"mod": ["A" if i % 2 == 0 else "B" for i in range(PLANTED_B)],
+            "snr": [20] * PLANTED_B}
+
+
 class TestDriversRun:
     def test_all_produce_stratified_records(self, device):
         frames = _sparse_frames(device)
@@ -143,6 +170,56 @@ class TestNullRejection:
         # the arm's reason to exist: no threshold to overshoot, so nothing is shrunk past its value
         assert by["cs_mmse"]["achieved_distortion"] < by["cs_shrunk"]["achieved_distortion"]
         assert by["cs_mmse"]["arm_vs_awgn_hi"] >= by["cs_mmse"]["arm_vs_awgn_lo"]
+
+    def test_the_ratio_reduces_to_retained_energy_on_uncorrelated_pairs(self, device):
+        # writing a view as g x + e gives ratio = g^2 + eps/(1 - corr) and energy = g^2 + eps, so
+        # the two coincide when same-class frames are uncorrelated: the ratio is a gain statistic
+        # and a value below 1 says nothing about the class, which is why no verdict scores it
+        recs = REGISTRY["class_diameter"](_sparse_frames(device, b=32), _meta(32), [0.25], 0,
+                                          device, measurement_snr=20.0)
+        for r in recs:
+            assert abs(r["diameter_ratio"] - r["retained_energy"]) < 0.25 * r["retained_energy"]
+
+    def test_isotropic_error_leaves_no_alignment_at_matched_distortion(self, device):
+        # the null the ratio could not express: awgn carries the same gain and error energy as cs,
+        # so only a statistic reading the error's direction can tell them apart
+        recs = REGISTRY["class_diameter"](_sparse_frames(device, b=32), _meta(32), [0.3], 0,
+                                          device, measurement_snr=20.0)
+        by = {r["arm"]: r for r in recs if r["mod"] == "A" and r["snr"] == 20}
+        assert abs(by["awgn"]["class_alignment"]) < 0.05
+        assert by["cs"]["class_alignment"] > 0.2
+
+    def test_the_projection_outruns_the_linear_arms_on_planted_classes(self, device):
+        # each class shares a sparse core and differs by an incompressible remainder, which is what
+        # the sparse projection should discard first; at matched distortion the linear and dropout
+        # arms have no reason to prefer that direction
+        recs = REGISTRY["class_diameter"](_planted_classes(device), _planted_meta(), [0.3], 0,
+                                          device, measurement_snr=20.0)
+        by = {r["arm"]: r["class_alignment"] for r in recs if r["mod"] == "A"}
+        assert by["cs"] > by["backprojection"]
+        assert by["cs"] > by["dropout"]
+        assert abs(by["awgn"]) < 0.05
+
+    def test_every_class_survives_the_half_split(self, device):
+        # a split that put a class in one half would leave its cross product empty and score nothing
+        recs = REGISTRY["class_diameter"](_sparse_frames(device, b=32), _meta(32), [0.5], 0, device)
+        assert {r["mod"] for r in recs} == {"A", "B"}
+        assert all(r["n_pairs"] >= 4 for r in recs)
+
+    def test_the_clean_diameter_is_the_same_denominator_for_every_arm_and_rho(self, device):
+        recs = REGISTRY["class_diameter"](_sparse_frames(device, b=32), _meta(32), [0.12, 0.5], 0,
+                                          device)
+        for mod in ("A", "B"):
+            vals = {r["clean_diameter"] for r in recs if r["mod"] == mod and r["snr"] == 10}
+            assert len(vals) == 1
+
+    def test_degeneracy_columns_track_the_collapse(self, device):
+        # far below the sparsity ratio the solver returns almost nothing, which the columns must say
+        recs = REGISTRY["kernel_geometry"](_sparse_frames(device, b=32), _meta(32), [0.03, 0.9], 0,
+                                           device, measurement_snr=20.0)
+        cs = {r["rho"]: r for r in recs if r["arm"] == "cs"}
+        assert cs[0.03]["retained_energy"] < 0.2 < cs[0.9]["retained_energy"]
+        assert cs[0.03]["m_over_k_eff"] < 1.0 < cs[0.9]["m_over_k_eff"]
 
     def test_empty_band_detected(self):
         assert admissible_band(0.8, 0.7, 0.6)["nonempty"] is False

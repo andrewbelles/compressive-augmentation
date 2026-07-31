@@ -2,7 +2,7 @@ import torch
 
 from dsp.operators import measure, measurement_noise, random_convolution
 from dsp.recovery import oamp, reconstruct
-from dsp.state_evolution import optimal_kappa
+from dsp.state_evolution import kappa_pinned, optimal_kappa
 from rf.hypotheses._artifacts import normalize_power, snr_strata
 from rf.signal_model import DEFAULT_DICTIONARY, build_dictionary, dither_sigma, frame_sparsity
 
@@ -47,6 +47,7 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
                 "m": m,
                 "eps": eps,
                 "kappa_pred": pred,
+                "kappa_pinned": kappa_pinned(rho, sigma, eps, frame.gamma, n),
                 "kappa_meas": best_k,
                 "kappa_err": abs(pred - best_k),
                 "snr_at_pred": at_pred,

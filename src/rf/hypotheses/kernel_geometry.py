@@ -7,7 +7,7 @@ from dsp.cumulants import cumulant_features
 from dsp.frames import analysis
 from dsp.operators import random_convolution
 from dsp.recovery import sparse_code
-from dsp.state_evolution import optimal_kappa
+from dsp.state_evolution import kappa_pinned, optimal_kappa
 from rf.augment import dither
 from rf.hypotheses._artifacts import mods_at, normalize_power, snr_strata
 from rf.hypotheses._matched import (
@@ -17,6 +17,7 @@ from rf.hypotheses._matched import (
     cs_view,
     distortion,
     dropout_view,
+    retained_energy,
     shrunk_view,
 )
 from rf.signal_model import (
@@ -70,6 +71,9 @@ def _stats(x, v1, v2, alpha, frame, k, mods, base_sep):
         "zeta": _zeta(e1, e2),
         "zeta_perp": _zeta(p1, p2),
         "support_fraction": _support_fraction(e1, alpha, frame, k),
+        # a solver that returns nothing makes every view identical, so any diversity or diameter
+        # ratio collapses for a reason that is not the mechanism under test
+        "retained_energy": retained_energy(x, v1),
         "achieved_distortion": distortion(x, v1),
         "view_diversity": distortion(v1, v2),
         "view_sep": torch.full_like(distortion(x, v1), sep),
@@ -148,7 +152,9 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
                     "measurement_snr": measurement_snr if measurement_snr is not None else float("inf"),
                     "rho": rho,
                     "m": m,
+                    "m_over_k_eff": m / k_eff(n),
                     "kappa": kappa,
+                    "kappa_pinned": kappa_pinned(rho, sigma, eps, frame.gamma, n),
                     "target_distortion": tmean,
                     "base_sep": base_sep,
                     "nuisance_collapse": collapse if arm == "cs" else float("nan"),

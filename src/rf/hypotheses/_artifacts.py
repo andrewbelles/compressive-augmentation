@@ -5,7 +5,9 @@ import torch
 
 # shared driver plumbing: rho grid, SNR strata, and per-mechanism parquet artifacts
 
-DEFAULT_RATIOS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+# log-spaced below the sparsity ratio k_eff/n = 0.169 and linear above it, so the grid straddles
+# the point where the measurement count stops covering the support and keeps rho_dt interior
+DEFAULT_RATIOS = [0.02, 0.03, 0.05, 0.08, 0.12, 0.17, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 EPS = 1e-12
 
 

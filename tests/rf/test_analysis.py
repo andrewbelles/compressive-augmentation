@@ -88,3 +88,12 @@ class TestOperatingBand:
         assert band_endpoints(tmp_path) == {}
         rows = pd.DataFrame([{"snr": 20, "measurement_snr": 10.0, "rho": r} for r in RHOS])
         assert _in_band(rows, {})["rho"].min() >= BAND_RHO
+
+
+class TestMeasurementWithoutAVerdict:
+    def test_class_diameter_writes_artifacts_that_no_verdict_scores(self):
+        # its pair statistics are recorded but no criterion is pre-registered over them, so the
+        # driver must not appear on either side of the verdict wiring
+        assert "class_diameter" in REGISTRY
+        assert "class_diameter" not in VERDICTS
+        assert "class_diameter" not in ARTIFACT_SOURCE.values()

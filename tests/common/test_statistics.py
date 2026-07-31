@@ -1,8 +1,9 @@
+import math
 import random
 
 import torch
 
-from common.statistics import scatter_ratio
+from common.statistics import class_margins, scatter_ratio
 
 D = 4
 PER_CLASS = 50
@@ -39,3 +40,21 @@ class TestScatterRatio:
     def test_single_class_is_nan(self, device):
         out = scatter_ratio(_clustered(device, 1.0), [0] * (D * PER_CLASS))
         assert out != out
+
+
+class TestClassMargins:
+    def test_margins_recover_the_planted_separation(self, device):
+        # the class means sit on scaled basis vectors, so the pair distances are known in closed form
+        lo, q10 = class_margins(_clustered(device, 8.0), _labels())
+        truth = 8.0 * math.sqrt(2.0)
+        assert abs(lo - truth) < 1.0
+        assert q10 >= lo
+
+    def test_collapsed_classes_shrink_the_margin(self, device):
+        wide, _ = class_margins(_clustered(device, 8.0), _labels())
+        tight, _ = class_margins(_clustered(device, 0.5), _labels())
+        assert tight < wide
+
+    def test_single_class_has_no_margin(self, device):
+        lo, q10 = class_margins(_clustered(device, 1.0), [0] * (D * PER_CLASS))
+        assert lo != lo and q10 != q10

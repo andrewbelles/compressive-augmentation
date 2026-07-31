@@ -24,3 +24,19 @@ def scatter_ratio(features: torch.Tensor, labels) -> float:
     w = torch.stack(within).mean()
     b = torch.stack([(m - mu_all).pow(2).sum() for m in means]).mean()
     return (b / w.clamp_min(EPS)).item()
+
+
+def class_margins(features: torch.Tensor, labels) -> tuple[float, float]:
+    """Minimum and 10th-percentile pairwise distance between class means."""
+    device = features.device
+    keys = sorted(set(labels))
+    if len(keys) < 2:
+        return float("nan"), float("nan")
+    index: dict = {k: [] for k in keys}
+    for i, label in enumerate(labels):
+        index[label].append(i)
+    stacked = torch.stack([features[torch.tensor(index[k], device=device)].mean(0) for k in keys])
+    dist = torch.cdist(stacked, stacked)
+    iu = torch.triu_indices(len(keys), len(keys), offset=1, device=device)
+    pairs = dist[iu[0], iu[1]]
+    return pairs.min().item(), pairs.quantile(0.1).item()
