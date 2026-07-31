@@ -57,7 +57,7 @@ echo "START hypotheses seed=$SEED msnr=${MSNR:-none} node=$(hostname) $(date -Is
 
 SNRS=-10,0,6,10,14,18,22,26,30
 COARSE=0.02,0.03,0.05,0.08,0.12,0.17,0.25,0.3,0.4,0.5,0.6,0.7,0.8,0.9
-FINE=0.02,0.03,0.05,0.08,0.12,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95
+FINE=0.02,0.03,0.05,0.08,0.12,0.15,0.17,0.2,0.25,0.3,0.35,0.4,0.45,0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95
 # the class-diameter sweep is the log-spaced grid: its accept lives below the sparsity ratio, where
 # the linear points carry no resolution, and its cost is trimmed here without touching the knee
 DIAMETER=0.02,0.03,0.05,0.08,0.12,0.17,0.25,0.3,0.4,0.5,0.6,0.7,0.8,0.9

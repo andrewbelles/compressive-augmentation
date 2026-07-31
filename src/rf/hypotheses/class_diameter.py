@@ -1,6 +1,6 @@
 import torch
 
-from common.statistics import class_margins
+from common.statistics import class_margins, scatter_ratio
 from dsp.cumulants import cumulant_distance, cumulant_features
 from dsp.operators import random_convolution
 from dsp.recovery import sparse_code
@@ -121,6 +121,10 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
         alphas = [sparse_code(p, frame, LAM)[0] for p in parts]
         members = _members(mods, idx, device)
         partners = {mod: _partners(sorted(members), mod) for mod in members}
+        # the label is the outcome the contraction is meant to buy, so it is read on these same rows
+        # rather than joined from kernel_geometry across two sweeps of different rho grids
+        half_mods = [mods[i] for j in (0, 1) for i in idx[j].tolist()]
+        base_sep = scatter_ratio(cumulant_features(sel), mods)
         clean = {mod: _pair_energy(parts[0][a], parts[1][b]) for mod, (a, b) in members.items()}
         clean_d = {mod: _diameter(d) for mod, d in clean.items()}
         for rho in ratios:
@@ -148,6 +152,7 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
                                             device)[0] for j in (0, 1)]
 
             for arm, views in arms.items():
+                sep = scatter_ratio(cumulant_features(torch.cat(views)), half_mods)
                 energy = [retained_energy(parts[j], views[j]) for j in (0, 1)]
                 dist = [distortion(parts[j], views[j]) for j in (0, 1)]
                 cdist = [cumulant_distance(parts[j], views[j]) for j in (0, 1)]
@@ -189,6 +194,11 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
                             _alignment(parts[0][a], parts[1][members[o][1]],
                                        views[0][a], views[1][members[o][1]]).mean().item()
                             for o in partners[mod]) / len(partners[mod]),
+                        "view_sep": sep,
+                        # carried beside the ratio because base_sep spans orders of magnitude across
+                        # strata, and a retention read against a small one is two noise floors
+                        "base_sep": base_sep,
+                        "label_retention": sep / base_sep if base_sep else float("nan"),
                         "mean_cumulant_dist": cd.mean().item(),
                         "median_cumulant_dist": cd.median().item(),
                         "delta_min": delta_min,
