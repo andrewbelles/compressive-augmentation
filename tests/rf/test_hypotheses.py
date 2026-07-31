@@ -33,7 +33,7 @@ PLANTED_B = 32
 PLANTED_SHARE = 0.7
 
 
-def _planted_classes(device, seed=3):
+def _planted_classes(device, share=PLANTED_SHARE, seed=3):
     # a shared sparse core per class plus an incompressible per-frame remainder, so the direction
     # separating two frames of one class is exactly the part the sparse model cannot represent
     frame = gabor_frame(N, 32, 8, device=device)
@@ -48,12 +48,22 @@ def _planted_classes(device, seed=3):
     core = synthesis(torch.stack([cores[m] for m in mods]), frame)
     rest = torch.randn(PLANTED_B, N, dtype=torch.complex64, device=device, generator=g)
     unit = lambda t: t / t.abs().pow(2).mean(-1, keepdim=True).sqrt()
-    return PLANTED_SHARE * unit(core) + (1.0 - PLANTED_SHARE) * unit(rest)
+    return share * unit(core) + (1.0 - share) * unit(rest)
 
 
 def _planted_meta():
     return {"mod": ["A" if i % 2 == 0 else "B" for i in range(PLANTED_B)],
             "snr": [20] * PLANTED_B}
+
+
+def _alignment_deltas(device, share, rho=0.3):
+    """Per-arm within-class minus between-class alignment on planted classes."""
+    recs = REGISTRY["class_diameter"](_planted_classes(device, share), _planted_meta(), [rho], 0,
+                                      device, measurement_snr=20.0)
+    out: dict[str, list[float]] = {}
+    for r in recs:
+        out.setdefault(r["arm"], []).append(r["class_alignment"] - r["class_alignment_between"])
+    return {arm: sum(v) / len(v) for arm, v in out.items()}
 
 
 class TestDriversRun:
@@ -180,25 +190,23 @@ class TestNullRejection:
         for r in recs:
             assert abs(r["diameter_ratio"] - r["retained_energy"]) < 0.25 * r["retained_energy"]
 
-    def test_isotropic_error_leaves_no_alignment_at_matched_distortion(self, device):
-        # the null the ratio could not express: awgn carries the same gain and error energy as cs,
-        # so only a statistic reading the error's direction can tell them apart
-        recs = REGISTRY["class_diameter"](_sparse_frames(device, b=32), _meta(32), [0.3], 0,
-                                          device, measurement_snr=20.0)
-        by = {r["arm"]: r for r in recs if r["mod"] == "A" and r["snr"] == 20}
-        assert abs(by["awgn"]["class_alignment"]) < 0.05
-        assert by["cs"]["class_alignment"] > 0.2
+    def test_only_the_sparse_projection_prefers_the_within_class_direction(self, device):
+        # the within-class term alone cannot separate the arms: a direction-agnostic map removes the
+        # same share of any pair direction, so the between-class term is what the nulls are read on
+        deltas = _alignment_deltas(device, PLANTED_SHARE)
+        assert deltas["cs"] > 0.2
+        for null in ("awgn", "backprojection", "dropout"):
+            assert abs(deltas[null]) < 0.1, null
+        assert deltas["cs"] > 4.0 * max(abs(deltas[n]) for n in
+                                        ("awgn", "backprojection", "dropout"))
 
-    def test_the_projection_outruns_the_linear_arms_on_planted_classes(self, device):
-        # each class shares a sparse core and differs by an incompressible remainder, which is what
-        # the sparse projection should discard first; at matched distortion the linear and dropout
-        # arms have no reason to prefer that direction
-        recs = REGISTRY["class_diameter"](_planted_classes(device), _planted_meta(), [0.3], 0,
-                                          device, measurement_snr=20.0)
-        by = {r["arm"]: r["class_alignment"] for r in recs if r["mod"] == "A"}
-        assert by["cs"] > by["backprojection"]
-        assert by["cs"] > by["dropout"]
-        assert abs(by["awgn"]) < 0.05
+    def test_no_class_structure_leaves_nothing_for_any_arm_to_prefer(self, device):
+        # the control that the within-class statistic failed: with the labels carrying no structure
+        # the two terms measure the same thing, so every arm must sit at zero
+        deltas = _alignment_deltas(device, 0.0)
+        for arm, d in deltas.items():
+            assert abs(d) < 0.05, arm
+
 
     def test_every_class_survives_the_half_split(self, device):
         # a split that put a class in one half would leave its cross product empty and score nothing

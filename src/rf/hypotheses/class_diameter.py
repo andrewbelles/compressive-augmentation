@@ -30,14 +30,16 @@ from rf.signal_model import (
 #
 # diameter_ratio reduces to g^2 + eps/(1 - corr) for a view g x + e, which equals retained_energy
 # whenever same-class frames are uncorrelated, so it is a gain statistic and carries no verdict.
-# class_alignment is the contraction statistic: it divides the gain out and is mean-zero under
-# isotropic error at any energy. No verdict scores these yet; the criterion is not pre-registered.
+# The contraction statistic is class_alignment minus class_alignment_between: each term divides the
+# gain out and is mean-zero under isotropic error at any energy, and their difference is zero for a
+# map that has no directional preference. No verdict scores these; the criterion is not registered.
 
 EPS = 1e-12
 LAM = 0.05
 QUANTILE = 0.9
 BOOTSTRAP = 1000
 MIN_PER_HALF = 2
+BETWEEN_CLASSES = 2
 
 
 def _halves(mods, device):
@@ -71,6 +73,12 @@ def _pair_energy(a, b):
 
 def _diameter(d):
     return d.quantile(QUANTILE).item()
+
+
+def _partners(keys, mod):
+    """A fixed small set of other classes, so the between-class term does not cost a full product."""
+    i = keys.index(mod)
+    return [keys[(i + j) % len(keys)] for j in range(1, min(BETWEEN_CLASSES, len(keys) - 1) + 1)]
 
 
 def _alignment(xa, xb, va, xb_view):
@@ -112,6 +120,7 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
         parts = [sel[i] for i in idx]
         alphas = [sparse_code(p, frame, LAM)[0] for p in parts]
         members = _members(mods, idx, device)
+        partners = {mod: _partners(sorted(members), mod) for mod in members}
         clean = {mod: _pair_energy(parts[0][a], parts[1][b]) for mod, (a, b) in members.items()}
         clean_d = {mod: _diameter(d) for mod, d in clean.items()}
         for rho in ratios:
@@ -173,6 +182,13 @@ def run(frames, meta, ratios, seed, device, dictionary=DEFAULT_DICTIONARY,
                         "diameter_ratio_hi": hi,
                         "class_alignment": _alignment(parts[0][a], parts[1][b],
                                                       views[0][a], views[1][b]).mean().item(),
+                        # the same statistic on pairs that cross classes, kept separate so a reader
+                        # sees which term moved; a direction-agnostic arm removes the same share of
+                        # both and only a projection preferring the within-class direction splits them
+                        "class_alignment_between": sum(
+                            _alignment(parts[0][a], parts[1][members[o][1]],
+                                       views[0][a], views[1][members[o][1]]).mean().item()
+                            for o in partners[mod]) / len(partners[mod]),
                         "mean_cumulant_dist": cd.mean().item(),
                         "median_cumulant_dist": cd.median().item(),
                         "delta_min": delta_min,
